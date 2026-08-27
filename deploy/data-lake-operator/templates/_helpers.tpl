@@ -51,6 +51,14 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
+Fully qualified manager image reference, defaulting the tag to the chart appVersion.
+*/}}
+{{- define "data-lake-operator.image" -}}
+{{- $tag := default .Chart.AppVersion .Values.image.tag -}}
+{{- printf "%s:%s" .Values.image.repository $tag -}}
+{{- end }}
+
+{{/*
 Create the name of the service account to use
 */}}
 {{- define "data-lake-operator.serviceAccountName" -}}

@@ -64,7 +64,36 @@ To cut a release:
 git tag v0.1.0 && git push origin v0.1.0
 ```
 
-## Deploying to a cluster
+## Installing with Helm
+
+The chart is published to GitHub Packages as an OCI artifact and installs the
+CRD, RBAC, and controller together:
+
+```bash
+helm install data-lake-operator \
+  oci://ghcr.io/opsarrayllc/charts/data-lake-operator \
+  --version 0.1.0 \
+  --namespace data-lake-system --create-namespace
+```
+
+The chart version and the operator image tag are released together, so the
+default `image.tag` follows the chart's `appVersion` and you rarely need to set
+it. Chart source lives in `deploy/data-lake-operator`; see its `values.yaml` for
+the full set of options. Notable ones:
+
+| Value | Default | Purpose |
+| --- | --- | --- |
+| `crds.enabled` | `true` | Install the `DataLake` CRD with the release |
+| `crds.keep` | `true` | Keep the CRD (and all `DataLake`s) on uninstall |
+| `metrics.secure` | `true` | Serve metrics over HTTPS with authn/authz |
+| `metrics.serviceMonitor.enabled` | `false` | Create a Prometheus `ServiceMonitor` |
+| `replicaCount` | `1` | Extra replicas are standbys; leader election picks one |
+
+The CRD template is generated from `config/crd/bases`, so after changing the API
+run `make helm-crds` and commit the result. CI fails the release if the chart's
+copy is stale.
+
+## Deploying with kustomize
 
 ```bash
 export IMG=ghcr.io/opsarrayllc/data-lake-operator:latest

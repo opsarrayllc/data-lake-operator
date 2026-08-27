@@ -11,6 +11,9 @@
 # Locally downloaded build tooling (controller-gen, kustomize, envtest, kubebuilder)
 bin/
 
+# Packaged Helm charts (dist/install.yaml is intentionally committed)
+dist/*.tgz
+
 # Test binary, built with `go test -c`
 *.test
 

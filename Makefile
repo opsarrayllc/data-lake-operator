@@ -147,6 +147,28 @@ build-installer: manifests generate kustomize ## Generate a consolidated YAML wi
 	cd config/manager && "$(KUSTOMIZE)" edit set image controller=${IMG}
 	"$(KUSTOMIZE)" build config/default > dist/install.yaml
 
+##@ Helm
+
+HELM ?= helm
+HELM_CHART_DIR ?= deploy/data-lake-operator
+
+.PHONY: helm-crds
+helm-crds: manifests ## Sync generated CRDs into the Helm chart templates.
+	./hack/sync-helm-crds.sh config/crd/bases $(HELM_CHART_DIR)/templates/crds.yaml
+
+.PHONY: helm-lint
+helm-lint: helm-crds ## Lint the Helm chart.
+	$(HELM) lint $(HELM_CHART_DIR)
+
+.PHONY: helm-template
+helm-template: helm-crds ## Render the Helm chart to stdout.
+	$(HELM) template data-lake-operator $(HELM_CHART_DIR)
+
+.PHONY: helm-package
+helm-package: helm-crds ## Package the Helm chart into dist/.
+	mkdir -p dist
+	$(HELM) package $(HELM_CHART_DIR) --destination dist
+
 ##@ Deployment
 
 ifndef ignore-not-found

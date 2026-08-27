@@ -1,0 +1,19 @@
+{{- if .Values.metrics.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "data-lake-operator.fullname" . }}-metrics
+  labels:
+    {{- include "data-lake-operator.labels" . | nindent 4 }}
+    control-plane: controller-manager
+spec:
+  type: {{ .Values.metrics.service.type }}
+  ports:
+    - name: metrics
+      port: {{ .Values.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+  selector:
+    {{- include "data-lake-operator.selectorLabels" . | nindent 4 }}
+    control-plane: controller-manager
+{{- end }}

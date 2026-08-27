@@ -1,4 +1,0 @@
-## Append samples of your project ##
-resources:
-- datalake_v1alpha1_datalake.yaml
-# +kubebuilder:scaffold:manifestskustomizesamples
