@@ -8,6 +8,9 @@
 *.so
 *.dylib
 
+# Locally downloaded build tooling (controller-gen, kustomize, envtest, kubebuilder)
+bin/
+
 # Test binary, built with `go test -c`
 *.test
 
