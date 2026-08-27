@@ -1,6 +1,13 @@
-# data-lake-operator
+# Data Lake Operator
 
 Kubernetes operator that deploys the resources needed to bootstrap a data lake.
+
+We've stood up all the individual pieces one by one and struggled with all the separate configurations and getting it all to work properly together. Let's switch gears and have it automated. 
+
+Goals:
+* Cross platform
+* Runs on as many cloud platforms as we can reasonably test on
+* Open Source Utilities
 
 Built with [Kubebuilder](https://book.kubebuilder.io) v4 / controller-runtime.
 
@@ -39,12 +46,37 @@ make install
 kubectl apply -k config/samples/
 ```
 
+## Container image
+
+CI publishes multi-arch (`linux/amd64`, `linux/arm64`) images to GitHub Packages:
+
+```
+ghcr.io/opsarrayllc/data-lake-operator
+```
+
+Tags are derived from the triggering ref: `latest` and `main` from the default
+branch, `sha-<commit>` for every build, and semver tags (`1.2.3`, `1.2`, `1`)
+when you push a `v*` tag. Pull requests are built as a check but never pushed.
+
+To cut a release:
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
 ## Deploying to a cluster
 
 ```bash
-export IMG=<registry>/data-lake-operator:<tag>
-make docker-build docker-push IMG=$IMG
+export IMG=ghcr.io/opsarrayllc/data-lake-operator:latest
 make deploy IMG=$IMG
+```
+
+To build and push the image yourself instead of relying on CI:
+
+```bash
+export IMG=<registry>/data-lake-operator:<tag>
+make docker-build docker-push IMG=$IMG   # single-arch, your host platform
+make docker-buildx IMG=$IMG              # multi-arch
 ```
 
 Tear down with `make undeploy` and `make uninstall`.

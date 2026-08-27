@@ -1,5 +1,7 @@
 # Build the manager binary
-FROM golang:1.26 AS builder
+# Pinning the builder to BUILDPLATFORM keeps it running natively; the Go
+# toolchain then cross-compiles to TARGETARCH instead of building under QEMU.
+FROM --platform=${BUILDPLATFORM} golang:1.26 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
