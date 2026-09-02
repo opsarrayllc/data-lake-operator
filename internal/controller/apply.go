@@ -71,11 +71,27 @@ const (
 	portNameHTTP              = "http"
 	sslModeDisable            = "disable"
 	volumeData                = "data"
+	volumeTmp                 = "tmp"
+	keyHome                   = "HOME"
+	keyMcConfigDir            = "MC_CONFIG_DIR"
+	mcHomePath                = "/tmp"
+	mcConfigPath              = "/tmp/.mc"
+	keyPGDATA                 = "PGDATA"
+	pgDataMountPath           = "/var/lib/postgresql/data"
+	pgDataPath                = "/var/lib/postgresql/data/pgdata"
 	minioAPIPort              = int32(9000)
 	minioConsolePort          = int32(9001)
 	postgresPort              = int32(5432)
 	lakekeeperPort            = int32(8181)
 	trinoPort                 = int32(8080)
+	uidMinio                  = int64(1000)
+	gidMinio                  = int64(1000)
+	uidPostgres               = int64(999)
+	gidPostgres               = int64(999)
+	uidLakekeeper             = int64(65532)
+	gidLakekeeper             = int64(65534)
+	uidTrino                  = int64(1000)
+	gidTrino                  = int64(1000)
 	reasonReconciling         = "Reconciling"
 	reasonReady               = "Ready"
 	reasonNotReady            = "NotReady"
@@ -201,19 +217,35 @@ func (r *DataPlatformReconciler) getSecretData(ctx context.Context, name, namesp
 	return string(val), nil
 }
 
-func restrictedPodSecurity() *corev1.PodSecurityContext {
-	return &corev1.PodSecurityContext{
+func restrictedPodSecurity(uid, gid int64) *corev1.PodSecurityContext {
+	sc := &corev1.PodSecurityContext{
 		RunAsNonRoot:   ptr.To(true),
 		SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 	}
+	if uid > 0 {
+		sc.RunAsUser = ptr.To(uid)
+	}
+	if gid > 0 {
+		sc.RunAsGroup = ptr.To(gid)
+		sc.FSGroup = ptr.To(gid)
+		sc.FSGroupChangePolicy = ptr.To(corev1.FSGroupChangeOnRootMismatch)
+	}
+	return sc
 }
 
-func restrictedContainerSecurity() *corev1.SecurityContext {
-	return &corev1.SecurityContext{
+func restrictedContainerSecurity(uid, gid int64) *corev1.SecurityContext {
+	sc := &corev1.SecurityContext{
 		AllowPrivilegeEscalation: ptr.To(false),
 		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 		RunAsNonRoot:             ptr.To(true),
 	}
+	if uid > 0 {
+		sc.RunAsUser = ptr.To(uid)
+	}
+	if gid > 0 {
+		sc.RunAsGroup = ptr.To(gid)
+	}
+	return sc
 }
 
 func (r *DataPlatformReconciler) patchStatus(ctx context.Context, dp *dataplatformv1alpha1.DataPlatform) error {

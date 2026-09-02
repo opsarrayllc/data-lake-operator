@@ -197,11 +197,7 @@ func (r *DataPlatformReconciler) applyPostgresStatefulSet(
 		}
 		sts.Spec.Replicas = ptr.To(int32(1))
 		sts.Spec.Template.Labels = labels
-		sts.Spec.Template.Spec.SecurityContext = &corev1.PodSecurityContext{
-			RunAsNonRoot:   ptr.To(true),
-			FSGroup:        ptr.To(int64(999)),
-			SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
-		}
+		sts.Spec.Template.Spec.SecurityContext = restrictedPodSecurity(uidPostgres, gidPostgres)
 		sts.Spec.Template.Spec.Containers = []corev1.Container{{
 			Name:  namePostgres,
 			Image: spec.ImageOrDefault(),
@@ -218,15 +214,16 @@ func (r *DataPlatformReconciler) applyPostgresStatefulSet(
 					},
 				},
 				{Name: "POSTGRES_DB", Value: spec.DatabaseOrDefault()},
+				{Name: keyPGDATA, Value: pgDataPath},
 			},
-			VolumeMounts: []corev1.VolumeMount{{Name: volumeData, MountPath: "/var/lib/postgresql/data"}},
+			VolumeMounts: []corev1.VolumeMount{{Name: volumeData, MountPath: pgDataMountPath}},
 			ReadinessProbe: &corev1.Probe{
 				ProbeHandler: corev1.ProbeHandler{
 					TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(postgresPort)},
 				},
 				PeriodSeconds: 5,
 			},
-			SecurityContext: restrictedContainerSecurity(),
+			SecurityContext: restrictedContainerSecurity(uidPostgres, gidPostgres),
 		}}
 		return nil
 	})

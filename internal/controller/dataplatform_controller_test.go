@@ -95,18 +95,25 @@ var _ = Describe("DataPlatform Controller", func() {
 		By("creating MinIO")
 		sts := &appsv1.StatefulSet{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameMinio, Namespace: nameMinio}, sts)).To(Succeed())
+		Expect(sts.Spec.Template.Spec.Containers[0].SecurityContext.RunAsUser).To(Equal(ptr.To(uidMinio)))
 		svc := &corev1.Service{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameMinio, Namespace: nameMinio}, svc)).To(Succeed())
 
 		By("creating the LakeKeeper namespace workloads")
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: namePostgres, Namespace: nameLakekeeper}, sts)).To(Succeed())
+		Expect(sts.Spec.Template.Spec.Containers[0].SecurityContext.RunAsUser).To(Equal(ptr.To(uidPostgres)))
+		Expect(sts.Spec.Template.Spec.Containers[0].Env).To(ContainElement(corev1.EnvVar{Name: keyPGDATA, Value: pgDataPath}))
 		deploy := &appsv1.Deployment{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameLakekeeper, Namespace: nameLakekeeper}, deploy)).To(Succeed())
 		Expect(deploy.Spec.Template.Spec.InitContainers).To(HaveLen(2))
+		Expect(deploy.Spec.Template.Spec.InitContainers[0].SecurityContext.RunAsUser).To(Equal(ptr.To(uidPostgres)))
+		Expect(deploy.Spec.Template.Spec.InitContainers[1].SecurityContext.RunAsUser).To(Equal(ptr.To(uidLakekeeper)))
+		Expect(deploy.Spec.Template.Spec.Containers[0].SecurityContext.RunAsUser).To(Equal(ptr.To(uidLakekeeper)))
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameLakekeeper, Namespace: nameLakekeeper}, svc)).To(Succeed())
 
 		By("creating the Trino coordinator wired to MinIO")
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameTrino, Namespace: nameTrino}, deploy)).To(Succeed())
+		Expect(deploy.Spec.Template.Spec.Containers[0].SecurityContext.RunAsUser).To(Equal(ptr.To(uidTrino)))
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameTrino, Namespace: nameTrino}, svc)).To(Succeed())
 		catalogSecret := &corev1.Secret{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: secretTrinoCatalog, Namespace: nameTrino}, catalogSecret)).To(Succeed())
@@ -132,6 +139,8 @@ var _ = Describe("DataPlatform Controller", func() {
 
 		job := &batchv1.Job{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameMinioBucketJob, Namespace: nameMinio}, job)).To(Succeed())
+		Expect(job.Spec.Template.Spec.Containers[0].Env).To(ContainElement(corev1.EnvVar{Name: keyHome, Value: mcHomePath}))
+		Expect(job.Spec.Template.Spec.Containers[0].Env).To(ContainElement(corev1.EnvVar{Name: keyMcConfigDir, Value: mcConfigPath}))
 		job.Status.Succeeded = 1
 		Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
 

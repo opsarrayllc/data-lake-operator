@@ -285,7 +285,7 @@ func (r *DataPlatformReconciler) reconcileTrinoWorkers(
 
 func trinoPodSpec(image, configKey string, resources corev1.ResourceRequirements, env []corev1.EnvVar) corev1.PodSpec {
 	return corev1.PodSpec{
-		SecurityContext: restrictedPodSecurity(),
+		SecurityContext: restrictedPodSecurity(uidTrino, gidTrino),
 		Containers: []corev1.Container{{
 			Name:  nameTrino,
 			Image: image,
@@ -305,7 +305,7 @@ func trinoPodSpec(image, configKey string, resources corev1.ResourceRequirements
 				PeriodSeconds: 10,
 			},
 			Resources:       resources,
-			SecurityContext: restrictedContainerSecurity(),
+			SecurityContext: restrictedContainerSecurity(uidTrino, gidTrino),
 		}},
 		Volumes: []corev1.Volume{
 			{

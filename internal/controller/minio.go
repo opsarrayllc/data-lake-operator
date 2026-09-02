@@ -246,11 +246,7 @@ func (r *DataPlatformReconciler) applyMinioStatefulSet(
 		}
 		sts.Spec.Replicas = ptr.To(int32(1))
 		sts.Spec.Template.Labels = labels
-		sts.Spec.Template.Spec.SecurityContext = &corev1.PodSecurityContext{
-			RunAsNonRoot:   ptr.To(true),
-			FSGroup:        ptr.To(int64(1000)),
-			SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
-		}
+		sts.Spec.Template.Spec.SecurityContext = restrictedPodSecurity(uidMinio, gidMinio)
 		sts.Spec.Template.Spec.Containers = []corev1.Container{{
 			Name:  nameMinio,
 			Image: spec.ImageOrDefault(),
@@ -290,7 +286,7 @@ func (r *DataPlatformReconciler) applyMinioStatefulSet(
 				PeriodSeconds: 5,
 			},
 			Resources:       spec.Resources,
-			SecurityContext: restrictedContainerSecurity(),
+			SecurityContext: restrictedContainerSecurity(uidMinio, gidMinio),
 		}}
 		return nil
 	})
@@ -324,7 +320,7 @@ func (r *DataPlatformReconciler) ensureMinioBucket(
 		if jobSucceeded(job) {
 			return true, nil
 		}
-		if jobFailed(job) {
+		if jobFailed(job) || !mcJobWritableConfig(job) {
 			if delErr := r.Delete(ctx, job); delErr != nil {
 				return false, delErr
 			}
@@ -349,27 +345,31 @@ func (r *DataPlatformReconciler) ensureMinioBucket(
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
-					RestartPolicy: corev1.RestartPolicyOnFailure,
-					SecurityContext: &corev1.PodSecurityContext{
-						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
-					},
+					RestartPolicy:   corev1.RestartPolicyOnFailure,
+					SecurityContext: restrictedPodSecurity(uidMinio, gidMinio),
 					Containers: []corev1.Container{{
 						Name:  "mc",
 						Image: spec.McImageOrDefault(),
 						Args:  []string{"mb", "--ignore-existing", "local/" + bucket},
-						Env: []corev1.EnvVar{{
-							Name: keyMCHost,
-							ValueFrom: &corev1.EnvVarSource{
-								SecretKeyRef: &corev1.SecretKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{Name: secretMinioMC},
-									Key:                  keyMCHost,
+						Env: []corev1.EnvVar{
+							{Name: keyHome, Value: mcHomePath},
+							{Name: keyMcConfigDir, Value: mcConfigPath},
+							{
+								Name: keyMCHost,
+								ValueFrom: &corev1.EnvVarSource{
+									SecretKeyRef: &corev1.SecretKeySelector{
+										LocalObjectReference: corev1.LocalObjectReference{Name: secretMinioMC},
+										Key:                  keyMCHost,
+									},
 								},
 							},
-						}},
-						SecurityContext: &corev1.SecurityContext{
-							AllowPrivilegeEscalation: ptr.To(false),
-							Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 						},
+						VolumeMounts:    []corev1.VolumeMount{{Name: volumeTmp, MountPath: mcHomePath}},
+						SecurityContext: restrictedContainerSecurity(uidMinio, gidMinio),
+					}},
+					Volumes: []corev1.Volume{{
+						Name:         volumeTmp,
+						VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 					}},
 				},
 			},
@@ -379,6 +379,18 @@ func (r *DataPlatformReconciler) ensureMinioBucket(
 		return false, err
 	}
 	return false, nil
+}
+
+func mcJobWritableConfig(job *batchv1.Job) bool {
+	if len(job.Spec.Template.Spec.Containers) == 0 {
+		return false
+	}
+	for _, env := range job.Spec.Template.Spec.Containers[0].Env {
+		if env.Name == keyHome && env.Value == mcHomePath {
+			return true
+		}
+	}
+	return false
 }
 
 func jobSucceeded(job *batchv1.Job) bool {

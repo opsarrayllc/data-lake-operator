@@ -1,0 +1,32 @@
+# Local DataPlatform for kind (embedded MinIO + Postgres, coordinator-only Trino).
+#
+#   make install
+#   make run          # or: make deploy IMG=...
+#   kubectl apply -f config/samples/dataplatform_v1alpha1_local.yaml
+#
+# Workloads land in namespaces minio, lakekeeper, and trino.
+apiVersion: dataplatform.opsarray.io/v1alpha1
+kind: DataPlatform
+metadata:
+  name: local
+spec:
+  storage:
+    embedded: true
+    minio:
+      namespace: minio
+      bucket: warehouse
+      storageSize: 2Gi
+  lakekeeper:
+    enabled: true
+    namespace: lakekeeper
+    postgres:
+      embedded: true
+      storageSize: 1Gi
+    warehouse:
+      name: default
+  trino:
+    enabled: true
+    namespace: trino
+    workers: 0
+    service:
+      type: ClusterIP

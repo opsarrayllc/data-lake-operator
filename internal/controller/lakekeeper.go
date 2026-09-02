@@ -127,20 +127,20 @@ func (r *DataPlatformReconciler) applyLakekeeperDeployment(
 		}
 		deploy.Spec.Replicas = ptr.To(spec.ReplicasOrDefault())
 		deploy.Spec.Template.Labels = labels
-		deploy.Spec.Template.Spec.SecurityContext = restrictedPodSecurity()
+		deploy.Spec.Template.Spec.SecurityContext = restrictedPodSecurity(0, 0)
 		deploy.Spec.Template.Spec.InitContainers = []corev1.Container{
 			{
 				Name:            "wait-for-postgres",
 				Image:           spec.Postgres.ImageOrDefault(),
 				Command:         []string{"sh", "-c", pgWait},
-				SecurityContext: restrictedContainerSecurity(),
+				SecurityContext: restrictedContainerSecurity(uidPostgres, gidPostgres),
 			},
 			{
 				Name:            "migrate",
 				Image:           spec.ImageOrDefault(),
 				Args:            []string{"migrate"},
+				SecurityContext: restrictedContainerSecurity(uidLakekeeper, gidLakekeeper),
 				Env:             env,
-				SecurityContext: restrictedContainerSecurity(),
 			},
 		}
 		deploy.Spec.Template.Spec.Containers = []corev1.Container{{
@@ -156,7 +156,7 @@ func (r *DataPlatformReconciler) applyLakekeeperDeployment(
 				PeriodSeconds: 5,
 			},
 			Resources:       spec.Resources,
-			SecurityContext: restrictedContainerSecurity(),
+			SecurityContext: restrictedContainerSecurity(uidLakekeeper, gidLakekeeper),
 		}}
 		return nil
 	})
