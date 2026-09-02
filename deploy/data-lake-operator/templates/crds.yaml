@@ -9,9 +9,9 @@ metadata:
     "helm.sh/resource-policy": keep
     {{- end }}
     controller-gen.kubebuilder.io/version: v0.21.0
-  name: datalakes.datalake.opsarray.io
+  name: datalakes.dataplatform.opsarray.io
 spec:
-  group: datalake.opsarray.io
+  group: dataplatform.opsarray.io
   names:
     kind: DataLake
     listKind: DataLakeList

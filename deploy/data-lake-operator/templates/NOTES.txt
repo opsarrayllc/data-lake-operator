@@ -14,7 +14,7 @@ Follow its logs:
 Create a DataLake to see it reconcile:
 
   kubectl apply -f - <<'EOF'
-  apiVersion: datalake.opsarray.io/v1alpha1
+  apiVersion: dataplatform.opsarray.io/v1alpha1
   kind: DataLake
   metadata:
     name: example

@@ -1,4 +1,4 @@
-apiVersion: datalake.opsarray.io/v1alpha1
+apiVersion: dataplatform.opsarray.io/v1alpha1
 kind: DataLake
 metadata:
   labels:

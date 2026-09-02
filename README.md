@@ -1,14 +1,12 @@
 # Data Lake Operator
 
-Kubernetes operator that deploys the resources needed to bootstrap a data lake.
-
-We've stood up all the individual pieces one by one and struggled with all the separate configurations and getting it all to work properly together. Let's switch gears and have it automated. 
+Kubernetes operator that deploys the resources needed to bootstrap a data platform.
 
 Goals:
 * Cross platform
 * Runs on as many cloud platforms as we can reasonably test on
 * Open Source Utilities
-* Cost should be negligible and scale appropriately with data size
+* Cost should be negligible and scale appropriately
 
 Built with [Kubebuilder](https://book.kubebuilder.io) v4 / controller-runtime.
 
@@ -16,7 +14,7 @@ Built with [Kubebuilder](https://book.kubebuilder.io) v4 / controller-runtime.
 
 | Group | Version | Kind |
 | --- | --- | --- |
-| `datalake.opsarray.io` | `v1alpha1` | `DataLake` |
+| `dataplatform.opsarray.io` | `v1alpha1` | `DataLake` |
 
 The type lives in `api/v1alpha1/datalake_types.go` and its reconciler in
 `internal/controller/datalake_controller.go`.
@@ -123,7 +121,7 @@ Use the CLI rather than hand-creating files, so the `PROJECT` file and scaffold
 markers stay consistent:
 
 ```bash
-kubebuilder create api --group datalake --version v1alpha1 --kind <Kind> --resource --controller
+kubebuilder create api --group dataplatform --version v1alpha1 --kind <Kind> --resource --controller
 ```
 
 Then re-run `make manifests generate`.
