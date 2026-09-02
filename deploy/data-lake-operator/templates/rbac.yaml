@@ -5,33 +5,9 @@ metadata:
   name: {{ include "data-lake-operator.fullname" . }}-manager
   labels:
     {{- include "data-lake-operator.labels" . | nindent 4 }}
+# Rules come from the +kubebuilder:rbac markers via 'make helm-sync'.
 rules:
-  - apiGroups:
-      - datalake.opsarray.io
-    resources:
-      - datalakes
-    verbs:
-      - create
-      - delete
-      - get
-      - list
-      - patch
-      - update
-      - watch
-  - apiGroups:
-      - datalake.opsarray.io
-    resources:
-      - datalakes/finalizers
-    verbs:
-      - update
-  - apiGroups:
-      - datalake.opsarray.io
-    resources:
-      - datalakes/status
-    verbs:
-      - get
-      - patch
-      - update
+{{ include "data-lake-operator.managerRules" . }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

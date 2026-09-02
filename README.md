@@ -8,6 +8,7 @@ Goals:
 * Cross platform
 * Runs on as many cloud platforms as we can reasonably test on
 * Open Source Utilities
+* Cost should be negligible and scale appropriately with data size
 
 Built with [Kubebuilder](https://book.kubebuilder.io) v4 / controller-runtime.
 
