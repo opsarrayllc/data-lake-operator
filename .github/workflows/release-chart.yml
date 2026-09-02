@@ -24,7 +24,7 @@ env:
   # Charts are pushed under a charts/ prefix so they sit alongside, rather than
   # collide with, the operator image package of the same name.
   CHART_REPO: ghcr.io/${{ github.repository_owner }}/charts
-  CHART_DIR: deploy/data-lake-operator
+  CHART_DIR: deploy/data-platform-operator
 
 jobs:
   chart:
@@ -65,7 +65,7 @@ jobs:
         run: helm lint "${CHART_DIR}"
 
       - name: Render chart
-        run: helm template data-lake-operator "${CHART_DIR}" > /dev/null
+        run: helm template data-platform-operator "${CHART_DIR}" > /dev/null
 
       # Tags drive both the chart version and the operator image tag, so the
       # chart always points at the image built from the same commit.
@@ -106,7 +106,7 @@ jobs:
         if: github.ref_type == 'tag'
         id: push
         run: |
-          chart="dist/data-lake-operator-${{ steps.version.outputs.version }}.tgz"
+          chart="dist/data-platform-operator-${{ steps.version.outputs.version }}.tgz"
           helm push "${chart}" "oci://${CHART_REPO}" 2>&1 | tee push.log
           digest="$(grep -oE 'sha256:[a-f0-9]{64}' push.log | head -1)"
           if [ -z "${digest}" ]; then
@@ -119,6 +119,6 @@ jobs:
         if: github.ref_type == 'tag'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-name: ${{ env.CHART_REPO }}/data-lake-operator
+          subject-name: ${{ env.CHART_REPO }}/data-platform-operator
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true

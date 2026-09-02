@@ -27,7 +27,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	dataplatformv1alpha1 "github.com/opsarrayllc/data-lake-operator/api/v1alpha1"
+	dataplatformv1alpha1 "github.com/opsarrayllc/data-platform-operator/api/v1alpha1"
 )
 
 var _ = Describe("DataPlatform Controller", func() {

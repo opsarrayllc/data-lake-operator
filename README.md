@@ -50,7 +50,7 @@ kubectl apply -k config/samples/
 CI publishes multi-arch (`linux/amd64`, `linux/arm64`) images to GitHub Packages:
 
 ```
-ghcr.io/opsarrayllc/data-lake-operator
+ghcr.io/opsarrayllc/data-platform-operator
 ```
 
 Tags are derived from the triggering ref: `latest` and `main` from the default
@@ -69,15 +69,15 @@ The chart is published to GitHub Packages as an OCI artifact and installs the
 CRD, RBAC, and controller together:
 
 ```bash
-helm install data-lake-operator \
-  oci://ghcr.io/opsarrayllc/charts/data-lake-operator \
+helm install data-platform-operator \
+  oci://ghcr.io/opsarrayllc/charts/data-platform-operator \
   --version 0.1.0 \
-  --namespace data-lake-system --create-namespace
+  --namespace data-platform-system --create-namespace
 ```
 
 The chart version and the operator image tag are released together, so the
 default `image.tag` follows the chart's `appVersion` and you rarely need to set
-it. Chart source lives in `deploy/data-lake-operator`; see its `values.yaml` for
+it. Chart source lives in `deploy/data-platform-operator`; see its `values.yaml` for
 the full set of options. Notable ones:
 
 | Value | Default | Purpose |
@@ -95,14 +95,14 @@ copy is stale.
 ## Deploying with kustomize
 
 ```bash
-export IMG=ghcr.io/opsarrayllc/data-lake-operator:latest
+export IMG=ghcr.io/opsarrayllc/data-platform-operator:latest
 make deploy IMG=$IMG
 ```
 
 To build and push the image yourself instead of relying on CI:
 
 ```bash
-export IMG=<registry>/data-lake-operator:<tag>
+export IMG=<registry>/data-platform-operator:<tag>
 make docker-build docker-push IMG=$IMG   # single-arch, your host platform
 make docker-buildx IMG=$IMG              # multi-arch
 ```

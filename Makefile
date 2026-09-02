@@ -69,7 +69,7 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 # - KUBECTL_KUBERC=true
 # CertManager is installed by default; skip with:
 # - CERT_MANAGER_INSTALL_SKIP=true
-KIND_CLUSTER ?= data-lake-operator-test-e2e
+KIND_CLUSTER ?= data-platform-operator-test-e2e
 
 .PHONY: setup-test-e2e
 setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
@@ -136,21 +136,21 @@ docker-push: ## Push docker image with the manager.
 PLATFORMS ?= linux/arm64,linux/amd64,linux/s390x,linux/ppc64le
 .PHONY: docker-buildx
 docker-buildx: ## Build and push docker image for the manager for cross-platform support
-	- $(CONTAINER_TOOL) buildx create --name data-lake-operator-builder
-	$(CONTAINER_TOOL) buildx use data-lake-operator-builder
+	- $(CONTAINER_TOOL) buildx create --name data-platform-operator-builder
+	$(CONTAINER_TOOL) buildx use data-platform-operator-builder
 	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${IMG} -f Dockerfile .
-	- $(CONTAINER_TOOL) buildx rm data-lake-operator-builder
+	- $(CONTAINER_TOOL) buildx rm data-platform-operator-builder
 
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
 	mkdir -p dist
 	cd config/manager && "$(KUSTOMIZE)" edit set image controller=${IMG}
-	"$(KUSTOMIZE)" build config/default > dist/install.yaml
+	"$(KUSTOMIZE)" build config/default > dist/data-platform-operator-install.yaml
 
 ##@ Helm
 
 HELM ?= helm
-HELM_CHART_DIR ?= deploy/data-lake-operator
+HELM_CHART_DIR ?= deploy/data-platform-operator
 
 .PHONY: helm-sync
 helm-sync: manifests ## Sync generated CRDs and RBAC rules into the Helm chart.
@@ -162,7 +162,7 @@ helm-lint: helm-sync ## Lint the Helm chart.
 
 .PHONY: helm-template
 helm-template: helm-sync ## Render the Helm chart to stdout.
-	$(HELM) template data-lake-operator $(HELM_CHART_DIR)
+	$(HELM) template data-platform-operator $(HELM_CHART_DIR)
 
 .PHONY: helm-package
 helm-package: helm-sync ## Package the Helm chart into dist/.

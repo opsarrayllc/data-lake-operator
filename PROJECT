@@ -6,8 +6,8 @@ cliVersion: 4.15.0
 domain: opsarray.io
 layout:
 - go.kubebuilder.io/v4
-projectName: data-lake-operator
-repo: github.com/opsarrayllc/data-lake-operator
+projectName: data-platform-operator
+repo: github.com/opsarrayllc/data-platform-operator
 resources:
 - api:
     crdVersion: v1
@@ -16,6 +16,6 @@ resources:
   domain: opsarray.io
   group: dataplatform
   kind: DataPlatform
-  path: github.com/opsarrayllc/data-lake-operator/api/v1alpha1
+  path: github.com/opsarrayllc/data-platform-operator/api/v1alpha1
   version: v1alpha1
 version: "3"

@@ -2,7 +2,7 @@ apiVersion: dataplatform.opsarray.io/v1alpha1
 kind: DataPlatform
 metadata:
   labels:
-    app.kubernetes.io/name: data-lake-operator
+    app.kubernetes.io/name: data-platform-operator
     app.kubernetes.io/managed-by: kustomize
   name: dataplatform-sample
 spec:

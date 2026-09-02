@@ -1,4 +1,4 @@
-module github.com/opsarrayllc/data-lake-operator
+module github.com/opsarrayllc/data-platform-operator
 
 go 1.26.0
 

@@ -1,4 +1,4 @@
-# data-lake-operator - AI Agent Guide
+# data-platform-operator - AI Agent Guide
 
 ## Project Structure
 

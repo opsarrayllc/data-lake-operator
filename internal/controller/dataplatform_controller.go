@@ -24,7 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	dataplatformv1alpha1 "github.com/opsarrayllc/data-lake-operator/api/v1alpha1"
+	dataplatformv1alpha1 "github.com/opsarrayllc/data-platform-operator/api/v1alpha1"
 )
 
 // DataPlatformReconciler reconciles a DataPlatform object

@@ -28,12 +28,12 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/opsarrayllc/data-lake-operator/test/utils"
+	"github.com/opsarrayllc/data-platform-operator/test/utils"
 )
 
 var (
 	// managerImage is the manager image to be built and loaded for testing.
-	managerImage = "example.com/data-lake-operator:v0.0.1"
+	managerImage = "example.com/data-platform-operator:v0.0.1"
 	// shouldCleanupCertManager tracks whether CertManager was installed by this suite.
 	shouldCleanupCertManager = false
 )
@@ -46,7 +46,7 @@ var (
 // To skip CertManager installation, set: CERT_MANAGER_INSTALL_SKIP=true
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
-	_, _ = fmt.Fprintf(GinkgoWriter, "Starting data-lake-operator e2e test suite\n")
+	_, _ = fmt.Fprintf(GinkgoWriter, "Starting data-platform-operator e2e test suite\n")
 	RunSpecs(t, "e2e suite")
 }
 

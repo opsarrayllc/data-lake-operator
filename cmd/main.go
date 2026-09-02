@@ -35,8 +35,8 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	dataplatformv1alpha1 "github.com/opsarrayllc/data-lake-operator/api/v1alpha1"
-	"github.com/opsarrayllc/data-lake-operator/internal/controller"
+	dataplatformv1alpha1 "github.com/opsarrayllc/data-platform-operator/api/v1alpha1"
+	"github.com/opsarrayllc/data-platform-operator/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
 
