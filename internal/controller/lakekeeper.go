@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -178,7 +179,11 @@ func lakekeeperEnv(dp *dataplatformv1alpha1.DataPlatform, conn postgresConn, oid
 		{Name: "LAKEKEEPER__PG_HOST_W", Value: conn.Host},
 		{Name: "LAKEKEEPER__PG_PORT", Value: strconv.Itoa(int(conn.Port))},
 		{Name: "LAKEKEEPER__PG_DATABASE", Value: conn.Database},
-		{Name: "LAKEKEEPER__BASE_URI", Value: dp.Status.LakekeeperEndpoint},
+	}
+	if public := strings.TrimRight(dp.Spec.Lakekeeper.PublicURL, "/"); public != "" {
+		// Pin the UI origin. Do not set LAKEKEEPER__BASE_URI: Iceberg clients and
+		// the UI then derive URLs from Host / X-Forwarded-* on each request.
+		env = append(env, corev1.EnvVar{Name: "LAKEKEEPER__UI__LAKEKEEPER_URL", Value: public})
 	}
 	if conn.SSLMode != "" {
 		env = append(env, corev1.EnvVar{Name: "LAKEKEEPER__PG_SSL_MODE", Value: conn.SSLMode})

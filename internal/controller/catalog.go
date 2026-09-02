@@ -24,11 +24,19 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/portforward"
+	"k8s.io/client-go/transport/spdy"
 )
 
 // CatalogClient talks to LakeKeeper's management API and can POST form data
@@ -56,16 +64,27 @@ type WarehouseRequest struct {
 }
 
 type proxyCatalogClient struct {
+	cfg        *rest.Config
+	kube       kubernetes.Interface
 	restClient rest.Interface
+	http       *http.Client
 }
 
-// NewProxyCatalogClient reaches LakeKeeper through the Kubernetes API service proxy.
+// NewProxyCatalogClient talks to in-cluster services. Keycloak token requests
+// use the API service proxy (no Authorization header). LakeKeeper management
+// calls cannot: kube-apiserver strips Authorization, so those go over HTTP
+// (cluster DNS in-cluster, port-forward when running locally).
 func NewProxyCatalogClient(cfg *rest.Config) (CatalogClient, error) {
 	cs, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		return nil, err
 	}
-	return &proxyCatalogClient{restClient: cs.CoreV1().RESTClient()}, nil
+	return &proxyCatalogClient{
+		cfg:        cfg,
+		kube:       cs,
+		restClient: cs.CoreV1().RESTClient(),
+		http:       &http.Client{Timeout: 30 * time.Second},
+	}, nil
 }
 
 func (c *proxyCatalogClient) Bootstrap(ctx context.Context, namespace, service string, port int32, bearer string) error {
@@ -147,35 +166,140 @@ func (c *proxyCatalogClient) do(
 	path, bearer string,
 	payload any,
 ) (int, []byte, error) {
-	name := service + ":" + strconv.Itoa(int(port))
-	req := c.restClient.Verb(method).
-		Namespace(namespace).
-		Resource("services").
-		Name(name).
-		SubResource("proxy").
-		Suffix(path).
-		SetHeader("Content-Type", "application/json")
-	if bearer != "" {
-		req = req.SetHeader("Authorization", "Bearer "+bearer)
+	base, cleanup, err := c.serviceBaseURL(ctx, namespace, service, port)
+	if err != nil {
+		return 0, nil, err
 	}
+	defer cleanup()
+
+	var body io.Reader
 	if payload != nil {
 		raw, err := json.Marshal(payload)
 		if err != nil {
 			return 0, nil, err
 		}
-		req = req.Body(raw)
+		body = bytes.NewReader(raw)
 	}
-	result := req.Do(ctx)
-	var statusCode int
-	result.StatusCode(&statusCode)
-	raw, err := result.Raw()
-	if err != nil && statusCode == 0 {
+	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(base, "/")+"/"+path, body)
+	if err != nil {
 		return 0, nil, err
 	}
-	if raw == nil && err != nil {
-		raw = []byte(err.Error())
+	req.Header.Set("Content-Type", "application/json")
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
 	}
-	return statusCode, raw, nil
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return 0, nil, err
+	}
+	return resp.StatusCode, raw, nil
+}
+
+func (c *proxyCatalogClient) serviceBaseURL(ctx context.Context, namespace, service string, port int32) (string, func(), error) {
+	if runningInCluster() {
+		return fmt.Sprintf("http://%s.%s.svc:%d", service, namespace, port), func() {}, nil
+	}
+	pod, err := c.readyPodForService(ctx, namespace, service)
+	if err != nil {
+		return "", nil, err
+	}
+	local, stop, err := c.portForward(ctx, namespace, pod, port)
+	if err != nil {
+		return "", nil, err
+	}
+	return fmt.Sprintf("http://127.0.0.1:%d", local), stop, nil
+}
+
+func (c *proxyCatalogClient) readyPodForService(ctx context.Context, namespace, service string) (string, error) {
+	svc, err := c.kube.CoreV1().Services(namespace).Get(ctx, service, metav1.GetOptions{})
+	if err != nil {
+		return "", err
+	}
+	if len(svc.Spec.Selector) == 0 {
+		return "", fmt.Errorf("service %s/%s has no selector", namespace, service)
+	}
+	pods, err := c.kube.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: labels.Set(svc.Spec.Selector).String(),
+	})
+	if err != nil {
+		return "", err
+	}
+	for i := range pods.Items {
+		if podReady(&pods.Items[i]) {
+			return pods.Items[i].Name, nil
+		}
+	}
+	return "", fmt.Errorf("no ready Pod for Service %s/%s", namespace, service)
+}
+
+func (c *proxyCatalogClient) portForward(ctx context.Context, namespace, pod string, port int32) (int, func(), error) {
+	reqURL := c.kube.CoreV1().RESTClient().Post().
+		Resource("pods").
+		Namespace(namespace).
+		Name(pod).
+		SubResource("portforward").
+		URL()
+	transport, upgrader, err := spdy.RoundTripperFor(c.cfg)
+	if err != nil {
+		return 0, nil, err
+	}
+	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, http.MethodPost, reqURL)
+	readyCh := make(chan struct{})
+	stopCh := make(chan struct{})
+	errCh := make(chan error, 1)
+	fw, err := portforward.NewOnAddresses(
+		dialer,
+		[]string{"127.0.0.1"},
+		[]string{fmt.Sprintf("0:%d", port)},
+		stopCh,
+		readyCh,
+		io.Discard,
+		io.Discard,
+	)
+	if err != nil {
+		return 0, nil, err
+	}
+	go func() { errCh <- fw.ForwardPorts() }()
+	select {
+	case <-readyCh:
+	case err := <-errCh:
+		return 0, nil, err
+	case <-ctx.Done():
+		close(stopCh)
+		return 0, nil, ctx.Err()
+	}
+	ports, err := fw.GetPorts()
+	if err != nil {
+		close(stopCh)
+		return 0, nil, err
+	}
+	if len(ports) == 0 {
+		close(stopCh)
+		return 0, nil, fmt.Errorf("port-forward to Pod %s/%s produced no ports", namespace, pod)
+	}
+	return int(ports[0].Local), sync.OnceFunc(func() { close(stopCh) }), nil
+}
+
+func runningInCluster() bool {
+	_, err := os.Stat("/var/run/secrets/kubernetes.io/serviceaccount/token")
+	return err == nil
+}
+
+func podReady(pod *corev1.Pod) bool {
+	if pod.Status.Phase != corev1.PodRunning {
+		return false
+	}
+	for _, cond := range pod.Status.Conditions {
+		if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
 }
 
 func warehouseCreateJSON(req WarehouseRequest) map[string]any {

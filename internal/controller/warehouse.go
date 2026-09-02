@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -34,6 +35,11 @@ func (r *DataPlatformReconciler) reconcileWarehouse(ctx context.Context, dp *dat
 
 	token, err := r.oidcAccessToken(ctx, oidc)
 	if err != nil {
+		setCondition(dp, dataplatformv1alpha1.ConditionWarehouseReady, metav1.ConditionFalse, reasonError, err.Error())
+		return err
+	}
+	if oidc.enabled && token == "" {
+		err := fmt.Errorf("OIDC token is empty")
 		setCondition(dp, dataplatformv1alpha1.ConditionWarehouseReady, metav1.ConditionFalse, reasonError, err.Error())
 		return err
 	}

@@ -79,8 +79,9 @@ spec:
                         type: string
                       publicURL:
                         description: |-
-                          publicURL is the Keycloak URL browsers use (for example http://localhost:8080 after port-forward).
-                          LakeKeeper's UI redirect uses this when set. In-cluster services always use the cluster DNS issuer.
+                          publicURL is the Keycloak URL browsers use (for example https://keycloak.example.com).
+                          When set, Keycloak advertises this hostname (and trusts X-Forwarded-* from an ingress).
+                          LakeKeeper's UI redirect uses this issuer; in-cluster services still use cluster DNS.
                         type: string
                       realm:
                         description: realm is imported on first start. Defaults to
@@ -437,6 +438,11 @@ spec:
                         description: storageSize is the PVC size for embedded Postgres.
                         type: string
                     type: object
+                  publicURL:
+                    description: |-
+                      publicURL is the LakeKeeper URL browsers use (for example https://lakekeeper.example.com).
+                      When set, the UI advertises this origin. In-cluster clients still use cluster DNS.
+                    type: string
                   replicas:
                     description: replicas is the number of LakeKeeper pods.
                     format: int32

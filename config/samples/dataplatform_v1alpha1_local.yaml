@@ -25,6 +25,7 @@ spec:
   lakekeeper:
     enabled: true
     namespace: lakekeeper
+    publicURL: https://lakekeeper.data-platform.local
     postgres:
       embedded: true
       storageSize: 1Gi

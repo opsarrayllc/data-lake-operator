@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -238,7 +239,7 @@ func (r *DataPlatformReconciler) applyKeycloakDeployment(
 			Image: spec.ImageOrDefault(),
 			Args:  []string{"start-dev", "--import-realm", "--http-port=" + fmt.Sprintf("%d", keycloakPort)},
 			Ports: []corev1.ContainerPort{{Name: portNameHTTP, ContainerPort: keycloakPort}},
-			Env: []corev1.EnvVar{
+			Env: append([]corev1.EnvVar{
 				{
 					Name: "KC_BOOTSTRAP_ADMIN_USERNAME",
 					ValueFrom: &corev1.EnvVarSource{
@@ -257,11 +258,7 @@ func (r *DataPlatformReconciler) applyKeycloakDeployment(
 						},
 					},
 				},
-				{Name: "KC_HTTP_ENABLED", Value: "true"},
-				{Name: "KC_HOSTNAME_STRICT", Value: "false"},
-				{Name: "KC_HEALTH_ENABLED", Value: "true"},
-				{Name: "KC_HOSTNAME", Value: fmt.Sprintf("http://%s.%s.svc:%d", nameKeycloak, ns, keycloakPort)},
-			},
+			}, keycloakHostnameEnv(ns, spec)...),
 			VolumeMounts: []corev1.VolumeMount{
 				{Name: volumeData, MountPath: "/opt/keycloak/data"},
 				{Name: volumeRealm, MountPath: "/opt/keycloak/data/import"},
@@ -292,6 +289,27 @@ func (r *DataPlatformReconciler) applyKeycloakDeployment(
 		}
 		return nil
 	})
+}
+
+// keycloakHostnameEnv configures Keycloak 26 hostname v2 so browsers stay on the
+// public ingress URL. In-cluster callers still use cluster DNS; when publicURL is
+// set, hostname-backchannel-dynamic lets those requests keep internal URLs.
+func keycloakHostnameEnv(ns string, spec dataplatformv1alpha1.KeycloakSpec) []corev1.EnvVar {
+	hostname := strings.TrimRight(spec.PublicURL, "/")
+	if hostname == "" {
+		hostname = fmt.Sprintf("http://%s.%s.svc:%d", nameKeycloak, ns, keycloakPort)
+	}
+	env := []corev1.EnvVar{
+		{Name: "KC_HTTP_ENABLED", Value: "true"},
+		{Name: "KC_HOSTNAME_STRICT", Value: "false"},
+		{Name: "KC_HOSTNAME", Value: hostname},
+		{Name: "KC_PROXY_HEADERS", Value: "xforwarded"},
+		{Name: "KC_HEALTH_ENABLED", Value: "true"},
+	}
+	if spec.PublicURL != "" {
+		env = append(env, corev1.EnvVar{Name: "KC_HOSTNAME_BACKCHANNEL_DYNAMIC", Value: "true"})
+	}
+	return env
 }
 
 func keycloakRealmJSON(spec dataplatformv1alpha1.KeycloakSpec, adminPass, trinoSecret, operatorSecret, lakekeeperNS string) (string, error) {

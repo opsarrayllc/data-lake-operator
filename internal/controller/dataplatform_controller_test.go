@@ -113,6 +113,9 @@ var _ = Describe("DataPlatform Controller", func() {
 		deploy := &appsv1.Deployment{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameKeycloak, Namespace: nameKeycloak}, deploy)).To(Succeed())
 		Expect(deploy.Spec.Template.Spec.Containers[0].SecurityContext.RunAsUser).To(Equal(ptr.To(uidKeycloak)))
+		Expect(envValue(deploy.Spec.Template.Spec.Containers[0].Env, "KC_HOSTNAME")).To(Equal("http://keycloak.keycloak.svc:8080"))
+		Expect(envValue(deploy.Spec.Template.Spec.Containers[0].Env, "KC_PROXY_HEADERS")).To(Equal("xforwarded"))
+		Expect(envValue(deploy.Spec.Template.Spec.Containers[0].Env, "KC_HOSTNAME_BACKCHANNEL_DYNAMIC")).To(BeEmpty())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: secretOIDC, Namespace: nameKeycloak}, &corev1.Secret{})).To(Succeed())
 
 		By("creating the LakeKeeper namespace workloads")
@@ -134,12 +137,17 @@ var _ = Describe("DataPlatform Controller", func() {
 		Expect(deploy.Spec.Template.Spec.InitContainers[1].SecurityContext.RunAsUser).To(Equal(ptr.To(uidLakekeeper)))
 		Expect(deploy.Spec.Template.Spec.Containers[0].SecurityContext.RunAsUser).To(Equal(ptr.To(uidLakekeeper)))
 		Expect(envValue(deploy.Spec.Template.Spec.Containers[0].Env, "LAKEKEEPER__OPENID_PROVIDER_URI")).To(ContainSubstring("/realms/dataplatform"))
+		Expect(envValue(deploy.Spec.Template.Spec.Containers[0].Env, "LAKEKEEPER__BASE_URI")).To(BeEmpty())
+		Expect(envValue(deploy.Spec.Template.Spec.Containers[0].Env, "LAKEKEEPER__UI__LAKEKEEPER_URL")).To(BeEmpty())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameLakekeeper, Namespace: nameLakekeeper}, svc)).To(Succeed())
 
 		By("creating the Trino coordinator wired to MinIO and OIDC")
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameTrino, Namespace: nameTrino}, deploy)).To(Succeed())
 		Expect(deploy.Spec.Template.Spec.Containers[0].SecurityContext.RunAsUser).To(Equal(ptr.To(uidTrino)))
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameTrino, Namespace: nameTrino}, svc)).To(Succeed())
+		cfg := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: configMapTrino, Namespace: nameTrino}, cfg)).To(Succeed())
+		Expect(cfg.Data["config.properties.coordinator"]).To(ContainSubstring("http-server.process-forwarded=true"))
 		catalogSecret := &corev1.Secret{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: secretTrinoCatalog, Namespace: nameTrino}, catalogSecret)).To(Succeed())
 		props := string(catalogSecret.Data[nameLakekeeper+".properties"])
@@ -187,6 +195,42 @@ var _ = Describe("DataPlatform Controller", func() {
 		Expect(updated.Status.LakekeeperEndpoint).To(Equal("http://lakekeeper.lakekeeper.svc:8181"))
 		Expect(updated.Status.TrinoEndpoint).To(Equal("http://trino.trino.svc:8080"))
 		Expect(updated.Status.KeycloakEndpoint).To(Equal("http://keycloak.keycloak.svc:8080"))
+	})
+
+	It("advertises publicURL as the Keycloak hostname behind ingress", func() {
+		resource := &dataplatformv1alpha1.DataPlatform{}
+		Expect(k8sClient.Get(ctx, typeNamespacedName, resource)).To(Succeed())
+		resource.Spec.Auth.Keycloak.PublicURL = "https://keycloak.data-platform.local"
+		Expect(k8sClient.Update(ctx, resource)).To(Succeed())
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+		Expect(err).NotTo(HaveOccurred())
+
+		deploy := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameKeycloak, Namespace: nameKeycloak}, deploy)).To(Succeed())
+		env := deploy.Spec.Template.Spec.Containers[0].Env
+		Expect(envValue(env, "KC_HOSTNAME")).To(Equal("https://keycloak.data-platform.local"))
+		Expect(envValue(env, "KC_PROXY_HEADERS")).To(Equal("xforwarded"))
+		Expect(envValue(env, "KC_HOSTNAME_BACKCHANNEL_DYNAMIC")).To(Equal("true"))
+	})
+
+	It("advertises lakekeeper publicURL to the UI", func() {
+		resource := &dataplatformv1alpha1.DataPlatform{}
+		Expect(k8sClient.Get(ctx, typeNamespacedName, resource)).To(Succeed())
+		resource.Spec.Lakekeeper.PublicURL = "https://lakekeeper.data-platform.local"
+		Expect(k8sClient.Update(ctx, resource)).To(Succeed())
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+		Expect(err).NotTo(HaveOccurred())
+		markDeploymentReady(ctx, nameKeycloak, nameKeycloak)
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+		Expect(err).NotTo(HaveOccurred())
+
+		deploy := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameLakekeeper, Namespace: nameLakekeeper}, deploy)).To(Succeed())
+		env := deploy.Spec.Template.Spec.Containers[0].Env
+		Expect(envValue(env, "LAKEKEEPER__UI__LAKEKEEPER_URL")).To(Equal("https://lakekeeper.data-platform.local"))
+		Expect(envValue(env, "LAKEKEEPER__BASE_URI")).To(BeEmpty())
 	})
 
 	It("uses an external S3 store when embedded is false", func() {

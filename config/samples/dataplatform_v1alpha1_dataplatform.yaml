@@ -48,6 +48,7 @@ spec:
     enabled: true
     # image: quay.io/lakekeeper/catalog:v0.13.3
     # replicas: 1
+    # publicURL: https://lakekeeper.example.com
     postgres:
       embedded: true
       # storageSize: 10Gi

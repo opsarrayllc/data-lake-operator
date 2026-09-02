@@ -121,8 +121,9 @@ type KeycloakSpec struct {
 	// +optional
 	Realm string `json:"realm,omitempty"`
 
-	// publicURL is the Keycloak URL browsers use (for example http://localhost:8080 after port-forward).
-	// LakeKeeper's UI redirect uses this when set. In-cluster services always use the cluster DNS issuer.
+	// publicURL is the Keycloak URL browsers use (for example https://keycloak.example.com).
+	// When set, Keycloak advertises this hostname (and trusts X-Forwarded-* from an ingress).
+	// LakeKeeper's UI redirect uses this issuer; in-cluster services still use cluster DNS.
 	// +optional
 	PublicURL string `json:"publicURL,omitempty"`
 
@@ -318,6 +319,11 @@ type LakekeeperSpec struct {
 	// extraEnv is appended to the LakeKeeper container (LAKEKEEPER__* and others).
 	// +optional
 	ExtraEnv []corev1.EnvVar `json:"extraEnv,omitempty"`
+
+	// publicURL is the LakeKeeper URL browsers use (for example https://lakekeeper.example.com).
+	// When set, the UI advertises this origin. In-cluster clients still use cluster DNS.
+	// +optional
+	PublicURL string `json:"publicURL,omitempty"`
 
 	// postgres is the catalog metadata database.
 	// +optional

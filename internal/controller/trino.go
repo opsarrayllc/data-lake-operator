@@ -85,6 +85,7 @@ func trinoConfigProperties(coordinator, includeCoordinator bool, ns string, extr
 	props := map[string]string{
 		"coordinator":                        fmt.Sprintf("%t", coordinator),
 		"http-server.http.port":              fmt.Sprintf("%d", trinoPort),
+		"http-server.process-forwarded":      "true",
 		"discovery.uri":                      clusterServiceURL(nameTrino, ns, trinoPort),
 		"node-scheduler.include-coordinator": fmt.Sprintf("%t", includeCoordinator),
 	}
