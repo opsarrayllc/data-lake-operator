@@ -21,62 +21,199 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	dataplatformv1alpha1 "github.com/opsarrayllc/data-platform-operator/api/v1alpha1"
 )
 
+type fakeCatalog struct {
+	bootstraps int
+	warehouses []string
+}
+
+func (f *fakeCatalog) Bootstrap(_ context.Context, _, _ string, _ int32) error {
+	f.bootstraps++
+	return nil
+}
+
+func (f *fakeCatalog) EnsureWarehouse(_ context.Context, _, _ string, _ int32, req WarehouseRequest) error {
+	f.warehouses = append(f.warehouses, req.Name)
+	return nil
+}
+
 var _ = Describe("DataPlatform Controller", func() {
-	Context("When reconciling a resource", func() {
-		const resourceName = "test-resource"
+	const resourceName = "test-platform"
 
-		ctx := context.Background()
+	ctx := context.Background()
+	typeNamespacedName := types.NamespacedName{Name: resourceName}
 
-		typeNamespacedName := types.NamespacedName{
-			Name: resourceName,
+	var (
+		catalog    *fakeCatalog
+		reconciler *DataPlatformReconciler
+	)
+
+	BeforeEach(func() {
+		catalog = &fakeCatalog{}
+		reconciler = &DataPlatformReconciler{
+			Client:  k8sClient,
+			Scheme:  k8sClient.Scheme(),
+			Catalog: catalog,
 		}
-		dataplatform := &dataplatformv1alpha1.DataPlatform{}
 
-		BeforeEach(func() {
-			By("creating the custom resource for the Kind DataPlatform")
-			err := k8sClient.Get(ctx, typeNamespacedName, dataplatform)
-			if err != nil && errors.IsNotFound(err) {
-				resource := &dataplatformv1alpha1.DataPlatform{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: resourceName,
-					},
-					// TODO(user): Specify other spec details if needed.
-				}
-				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+		By("creating the DataPlatform")
+		existing := &dataplatformv1alpha1.DataPlatform{}
+		err := k8sClient.Get(ctx, typeNamespacedName, existing)
+		if err != nil && errors.IsNotFound(err) {
+			resource := &dataplatformv1alpha1.DataPlatform{
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName},
 			}
-		})
+			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+		}
+	})
 
-		AfterEach(func() {
-			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &dataplatformv1alpha1.DataPlatform{}
+	AfterEach(func() {
+		resource := &dataplatformv1alpha1.DataPlatform{}
+		err := k8sClient.Get(ctx, typeNamespacedName, resource)
+		if errors.IsNotFound(err) {
+			return
+		}
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+	})
+
+	It("creates MinIO, Postgres, LakeKeeper, and Trino resources", func() {
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+		Expect(err).NotTo(HaveOccurred())
+
+		By("creating MinIO")
+		sts := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameMinio, Namespace: nameMinio}, sts)).To(Succeed())
+		svc := &corev1.Service{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameMinio, Namespace: nameMinio}, svc)).To(Succeed())
+
+		By("creating the LakeKeeper namespace workloads")
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: namePostgres, Namespace: nameLakekeeper}, sts)).To(Succeed())
+		deploy := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameLakekeeper, Namespace: nameLakekeeper}, deploy)).To(Succeed())
+		Expect(deploy.Spec.Template.Spec.InitContainers).To(HaveLen(2))
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameLakekeeper, Namespace: nameLakekeeper}, svc)).To(Succeed())
+
+		By("creating the Trino coordinator wired to MinIO")
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameTrino, Namespace: nameTrino}, deploy)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameTrino, Namespace: nameTrino}, svc)).To(Succeed())
+		catalogSecret := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: secretTrinoCatalog, Namespace: nameTrino}, catalogSecret)).To(Succeed())
+		props := string(catalogSecret.Data[nameLakekeeper+".properties"])
+		Expect(props).To(ContainSubstring("iceberg.catalog.type=rest"))
+		Expect(props).To(ContainSubstring("s3.endpoint=http://minio.minio.svc:9000"))
+		Expect(props).To(ContainSubstring("s3.path-style-access=true"))
+
+		By("not bootstrapping until LakeKeeper and MinIO are ready")
+		Expect(catalog.bootstraps).To(Equal(0))
+	})
+
+	It("bootstraps the warehouse once LakeKeeper and MinIO are ready", func() {
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+		Expect(err).NotTo(HaveOccurred())
+
+		markStatefulSetReady(ctx, namePostgres, nameLakekeeper)
+		markStatefulSetReady(ctx, nameMinio, nameMinio)
+		markDeploymentReady(ctx, nameLakekeeper, nameLakekeeper)
+
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+		Expect(err).NotTo(HaveOccurred())
+
+		job := &batchv1.Job{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameMinioBucketJob, Namespace: nameMinio}, job)).To(Succeed())
+		job.Status.Succeeded = 1
+		Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(catalog.bootstraps).To(Equal(1))
+		Expect(catalog.warehouses).To(ContainElement("default"))
+
+		updated := &dataplatformv1alpha1.DataPlatform{}
+		Expect(k8sClient.Get(ctx, typeNamespacedName, updated)).To(Succeed())
+		Expect(updated.Status.MinioEndpoint).To(Equal("http://minio.minio.svc:9000"))
+		Expect(updated.Status.LakekeeperEndpoint).To(Equal("http://lakekeeper.lakekeeper.svc:8181"))
+		Expect(updated.Status.TrinoEndpoint).To(Equal("http://trino.trino.svc:8080"))
+	})
+
+	It("uses an external S3 store when embedded is false", func() {
+		resource := &dataplatformv1alpha1.DataPlatform{}
+		Expect(k8sClient.Get(ctx, typeNamespacedName, resource)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+		Eventually(func() bool {
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
-			Expect(err).NotTo(HaveOccurred())
+			return errors.IsNotFound(err)
+		}).Should(BeTrue())
 
-			By("Cleanup the specific resource instance DataPlatform")
-			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
-		})
-		It("should successfully reconcile the resource", func() {
-			By("Reconciling the created resource")
-			controllerReconciler := &DataPlatformReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-			}
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nameLakekeeper}}
+		err := k8sClient.Get(ctx, types.NamespacedName{Name: ns.Name}, ns)
+		if err != nil && errors.IsNotFound(err) {
+			Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+		}
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "s3-credentials", Namespace: nameLakekeeper},
+			Type:       corev1.SecretTypeOpaque,
+			Data: map[string][]byte{
+				keyS3Access: []byte("test-access"),
+				keyS3Secret: []byte("test-secret"),
+			},
+		}
+		err = k8sClient.Get(ctx, types.NamespacedName{Name: secret.Name, Namespace: secret.Namespace}, secret)
+		if err != nil && errors.IsNotFound(err) {
+			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+		}
 
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: typeNamespacedName,
-			})
-			Expect(err).NotTo(HaveOccurred())
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
-		})
+		external := &dataplatformv1alpha1.DataPlatform{
+			ObjectMeta: metav1.ObjectMeta{Name: resourceName},
+			Spec: dataplatformv1alpha1.DataPlatformSpec{
+				Storage: dataplatformv1alpha1.StorageSpec{
+					Embedded: ptr.To(false),
+					S3: &dataplatformv1alpha1.S3Spec{
+						Bucket: "test-bucket",
+						Region: "us-east-1",
+						CredentialsSecretRef: &dataplatformv1alpha1.S3CredentialsSecretRef{
+							Name:      "s3-credentials",
+							Namespace: nameLakekeeper,
+						},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, external)).To(Succeed())
+
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+		Expect(err).NotTo(HaveOccurred())
+
+		catalogSecret := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: secretTrinoCatalog, Namespace: nameTrino}, catalogSecret)).To(Succeed())
+		Expect(string(catalogSecret.Data[nameLakekeeper+".properties"])).To(ContainSubstring("s3.aws-access-key=test-access"))
+		Expect(string(catalogSecret.Data[nameLakekeeper+".properties"])).NotTo(ContainSubstring("s3.path-style-access=true"))
 	})
 })
+
+func markStatefulSetReady(ctx context.Context, name, ns string) {
+	sts := &appsv1.StatefulSet{}
+	Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, sts)).To(Succeed())
+	sts.Status.ReadyReplicas = 1
+	sts.Status.Replicas = 1
+	Expect(k8sClient.Status().Update(ctx, sts)).To(Succeed())
+}
+
+func markDeploymentReady(ctx context.Context, name, ns string) {
+	deploy := &appsv1.Deployment{}
+	Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, deploy)).To(Succeed())
+	deploy.Status.ReadyReplicas = 1
+	deploy.Status.Replicas = 1
+	Expect(k8sClient.Status().Update(ctx, deploy)).To(Succeed())
+}

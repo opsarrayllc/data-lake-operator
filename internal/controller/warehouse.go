@@ -1,0 +1,60 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package controller
+
+import (
+	"context"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+
+	dataplatformv1alpha1 "github.com/opsarrayllc/data-platform-operator/api/v1alpha1"
+)
+
+func (r *DataPlatformReconciler) reconcileWarehouse(ctx context.Context, dp *dataplatformv1alpha1.DataPlatform, store objectStore) error {
+	log := logf.FromContext(ctx)
+	if r.Catalog == nil {
+		setCondition(dp, dataplatformv1alpha1.ConditionWarehouseReady, metav1.ConditionFalse, reasonMissing, "Catalog client is not configured")
+		return nil
+	}
+
+	ns := dp.Spec.Lakekeeper.NamespaceOrDefault()
+	if err := r.Catalog.Bootstrap(ctx, ns, nameLakekeeper, lakekeeperPort); err != nil {
+		setCondition(dp, dataplatformv1alpha1.ConditionWarehouseReady, metav1.ConditionFalse, reasonError, err.Error())
+		return err
+	}
+	req := WarehouseRequest{
+		Name:            dp.Spec.Lakekeeper.Warehouse.NameOrDefault(),
+		Bucket:          store.Bucket,
+		Region:          store.Region,
+		KeyPrefix:       dp.Spec.Lakekeeper.Warehouse.KeyPrefix,
+		Endpoint:        store.Endpoint,
+		PathStyleAccess: store.PathStyleAccess,
+		Flavor:          store.Flavor,
+		STSEnabled:      store.STSEnabled,
+		STSRoleARN:      store.STSRoleARN,
+		AccessKeyID:     store.AccessKeyID,
+		SecretAccessKey: store.SecretAccessKey,
+	}
+	if err := r.Catalog.EnsureWarehouse(ctx, ns, nameLakekeeper, lakekeeperPort, req); err != nil {
+		setCondition(dp, dataplatformv1alpha1.ConditionWarehouseReady, metav1.ConditionFalse, reasonError, err.Error())
+		return err
+	}
+	log.Info("Ensured LakeKeeper warehouse", "name", req.Name)
+	setCondition(dp, dataplatformv1alpha1.ConditionWarehouseReady, metav1.ConditionTrue, reasonReady, "Warehouse "+req.Name+" is ready")
+	return nil
+}

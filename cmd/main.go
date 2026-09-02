@@ -178,9 +178,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	catalog, err := controller.NewProxyCatalogClient(mgr.GetConfig())
+	if err != nil {
+		setupLog.Error(err, "Failed to create LakeKeeper catalog client")
+		os.Exit(1)
+	}
+
 	if err := (&controller.DataPlatformReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:  mgr.GetClient(),
+		Scheme:  mgr.GetScheme(),
+		Catalog: catalog,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "dataplatform")
 		os.Exit(1)

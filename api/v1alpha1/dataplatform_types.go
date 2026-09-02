@@ -17,53 +17,364 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
+const (
+	// ConditionReady is True when every enabled component is ready.
+	ConditionReady = "Ready"
+	// ConditionPostgresReady is True when LakeKeeper's Postgres is usable.
+	ConditionPostgresReady = "PostgresReady"
+	// ConditionLakekeeperReady is True when the LakeKeeper Deployment is ready.
+	ConditionLakekeeperReady = "LakekeeperReady"
+	// ConditionWarehouseReady is True when the Iceberg warehouse exists.
+	ConditionWarehouseReady = "WarehouseReady"
+	// ConditionTrinoReady is True when the Trino coordinator is ready.
+	ConditionTrinoReady = "TrinoReady"
+	// ConditionMinioReady is True when in-cluster MinIO is usable, or when using an external store.
+	ConditionMinioReady = "MinioReady"
 
-// DataPlatformSpec defines the desired state of DataPlatform
+	DefaultLakekeeperNamespace = "lakekeeper"
+	DefaultTrinoNamespace      = "trino"
+	DefaultMinioNamespace      = "minio"
+	DefaultLakekeeperImage     = "quay.io/lakekeeper/catalog:v0.13.3"
+	DefaultTrinoImage          = "trinodb/trino:476"
+	DefaultPostgresImage       = "postgres:17"
+	DefaultMinioImage          = "minio/minio:RELEASE.2025-04-22T22-12-26Z"
+	DefaultMcImage             = "minio/mc:RELEASE.2025-04-16T18-13-26Z"
+	DefaultWarehouseName       = "default"
+	DefaultPostgresStorage     = "10Gi"
+	DefaultMinioStorage        = "20Gi"
+	DefaultMinioBucket         = "warehouse"
+	DefaultS3Flavor            = "aws"
+	DefaultS3CompatFlavor      = "s3-compat"
+	DefaultS3CompatRegion      = "us-east-1"
+)
+
+// DataPlatformSpec defines the desired state of DataPlatform.
 type DataPlatformSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
-
-	// foo is an example field of DataPlatform. Edit dataplatform_types.go to remove/update
+	// storage configures the object store used by the Iceberg warehouse.
+	// Required when LakeKeeper is enabled.
 	// +optional
-	Foo *string `json:"foo,omitempty"`
+	Storage StorageSpec `json:"storage"`
+
+	// lakekeeper configures the Iceberg REST catalog.
+	// +optional
+	Lakekeeper LakekeeperSpec `json:"lakekeeper"`
+
+	// trino configures the query engine.
+	// +optional
+	Trino TrinoSpec `json:"trino"`
+}
+
+// StorageSpec configures table data storage.
+// By default the operator deploys MinIO. Set embedded to false and fill s3
+// to use AWS S3 or another existing S3-compatible store.
+type StorageSpec struct {
+	// embedded deploys MinIO in its own namespace. Defaults to true.
+	// +optional
+	Embedded *bool `json:"embedded,omitempty"`
+
+	// minio configures the operator-managed MinIO instance.
+	// +optional
+	Minio MinioSpec `json:"minio"`
+
+	// s3 is required when embedded is false.
+	// +optional
+	S3 *S3Spec `json:"s3,omitempty"`
+}
+
+// MinioSpec configures operator-managed MinIO.
+type MinioSpec struct {
+	// namespace defaults to "minio". Use a unique value if you create multiple DataPlatforms.
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+
+	// image is the MinIO server image.
+	// +optional
+	Image string `json:"image,omitempty"`
+
+	// mcImage is the MinIO client image used to create the bucket.
+	// +optional
+	McImage string `json:"mcImage,omitempty"`
+
+	// storageSize is the PVC size.
+	// +optional
+	StorageSize string `json:"storageSize,omitempty"`
+
+	// bucket is created in MinIO if it does not exist.
+	// +optional
+	Bucket string `json:"bucket,omitempty"`
+
+	// resources are compute resource requirements for the MinIO container.
+	// +optional
+	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+}
+
+// S3Spec is the warehouse object-store profile.
+type S3Spec struct {
+	// bucket is the S3 bucket name.
+	// +kubebuilder:validation:MinLength=1
+	Bucket string `json:"bucket"`
+
+	// region is the AWS region, or a placeholder such as "local" for S3-compatible stores.
+	// +kubebuilder:validation:MinLength=1
+	Region string `json:"region"`
+
+	// endpoint is an optional custom S3 API URL (MinIO, SeaweedFS, etc.).
+	// +optional
+	Endpoint string `json:"endpoint,omitempty"`
+
+	// pathStyleAccess uses path-style URLs. Required for many S3-compatible stores.
+	// +optional
+	PathStyleAccess bool `json:"pathStyleAccess,omitempty"`
+
+	// flavor selects the LakeKeeper storage profile.
+	// +optional
+	// +kubebuilder:validation:Enum=aws;s3-compat
+	// +kubebuilder:default=aws
+	Flavor string `json:"flavor,omitempty"`
+
+	// stsEnabled asks LakeKeeper to vend temporary credentials to engines.
+	// +optional
+	STSEnabled bool `json:"stsEnabled,omitempty"`
+
+	// stsRoleARN is the IAM role LakeKeeper assumes when STS is enabled.
+	// +optional
+	STSRoleARN string `json:"stsRoleARN,omitempty"`
+
+	// credentialsSecretRef points at a Secret with static S3 keys.
+	// Namespace is required because DataPlatform is cluster-scoped.
+	// Required when using an external store (storage.embedded=false).
+	// +optional
+	CredentialsSecretRef *S3CredentialsSecretRef `json:"credentialsSecretRef,omitempty"`
+}
+
+// S3CredentialsSecretRef locates a Secret that holds AWS-style access keys.
+type S3CredentialsSecretRef struct {
+	// name of the Secret.
+	Name string `json:"name"`
+
+	// namespace of the Secret.
+	Namespace string `json:"namespace"`
+
+	// accessKeyIDKey is the Secret key for the access key ID.
+	// +optional
+	// +kubebuilder:default=AWS_ACCESS_KEY_ID
+	AccessKeyIDKey string `json:"accessKeyIDKey,omitempty"`
+
+	// secretAccessKeyKey is the Secret key for the secret access key.
+	// +optional
+	// +kubebuilder:default=AWS_SECRET_ACCESS_KEY
+	SecretAccessKeyKey string `json:"secretAccessKeyKey,omitempty"`
+}
+
+// LakekeeperSpec configures the Iceberg REST catalog.
+type LakekeeperSpec struct {
+	// enabled deploys LakeKeeper. Defaults to true.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// namespace is the Kubernetes namespace for LakeKeeper (and embedded Postgres).
+	// Defaults to "lakekeeper". Use a unique value if you create multiple DataPlatforms.
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+
+	// image is the LakeKeeper container image.
+	// +optional
+	Image string `json:"image,omitempty"`
+
+	// replicas is the number of LakeKeeper pods.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	Replicas *int32 `json:"replicas,omitempty"`
+
+	// resources are compute resource requirements for the catalog container.
+	// +optional
+	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// extraEnv is appended to the LakeKeeper container (LAKEKEEPER__* and others).
+	// +optional
+	ExtraEnv []corev1.EnvVar `json:"extraEnv,omitempty"`
+
+	// postgres is the catalog metadata database.
+	// +optional
+	Postgres PostgresSpec `json:"postgres"`
+
+	// warehouse is created via the LakeKeeper management API after bootstrap.
+	// +optional
+	Warehouse WarehouseSpec `json:"warehouse"`
+}
+
+// PostgresSpec is either an operator-managed instance or a pointer at an existing database.
+type PostgresSpec struct {
+	// embedded deploys a single-replica Postgres in the LakeKeeper namespace.
+	// Defaults to true. Set false and fill host/credentials for an external database.
+	// +optional
+	Embedded *bool `json:"embedded,omitempty"`
+
+	// image is used when embedded is true.
+	// +optional
+	Image string `json:"image,omitempty"`
+
+	// storageSize is the PVC size for embedded Postgres.
+	// +optional
+	StorageSize string `json:"storageSize,omitempty"`
+
+	// host is required when embedded is false.
+	// +optional
+	Host string `json:"host,omitempty"`
+
+	// port of the external database.
+	// +optional
+	Port int32 `json:"port,omitempty"`
+
+	// database name.
+	// +optional
+	Database string `json:"database,omitempty"`
+
+	// sslMode is passed to the Postgres driver (disable, prefer, require, ...).
+	// +optional
+	SSLMode string `json:"sslMode,omitempty"`
+
+	// credentialsSecretRef locates username/password for an external database.
+	// +optional
+	CredentialsSecretRef *PostgresCredentialsSecretRef `json:"credentialsSecretRef,omitempty"`
+}
+
+// PostgresCredentialsSecretRef locates a Secret with username and password.
+type PostgresCredentialsSecretRef struct {
+	// name of the Secret.
+	Name string `json:"name"`
+
+	// namespace of the Secret. Defaults to the LakeKeeper namespace.
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+
+	// usernameKey is the Secret key for the database user.
+	// +optional
+	// +kubebuilder:default=username
+	UsernameKey string `json:"usernameKey,omitempty"`
+
+	// passwordKey is the Secret key for the database password.
+	// +optional
+	// +kubebuilder:default=password
+	PasswordKey string `json:"passwordKey,omitempty"`
+}
+
+// WarehouseSpec is the LakeKeeper warehouse created for Iceberg tables.
+type WarehouseSpec struct {
+	// name is the warehouse identifier engines use in iceberg.rest-catalog.warehouse.
+	// +optional
+	Name string `json:"name,omitempty"`
+
+	// keyPrefix is an optional path inside the bucket.
+	// +optional
+	KeyPrefix string `json:"keyPrefix,omitempty"`
+}
+
+// TrinoSpec configures the query engine.
+type TrinoSpec struct {
+	// enabled deploys Trino. Defaults to true.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// namespace is the Kubernetes namespace for Trino.
+	// Defaults to "trino". Use a unique value if you create multiple DataPlatforms.
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+
+	// image is the Trino container image.
+	// +optional
+	Image string `json:"image,omitempty"`
+
+	// workers is the number of Trino worker pods. Zero runs a coordinator-only cluster.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	Workers *int32 `json:"workers,omitempty"`
+
+	// coordinator configures the Trino coordinator.
+	// +optional
+	Coordinator TrinoCoordinatorSpec `json:"coordinator"`
+
+	// extraConfig is merged into config.properties (key=value).
+	// +optional
+	ExtraConfig map[string]string `json:"extraConfig,omitempty"`
+
+	// extraCatalogs adds extra files under etc/catalog. The "lakekeeper" catalog is reserved.
+	// +optional
+	ExtraCatalogs map[string]string `json:"extraCatalogs,omitempty"`
+
+	// extraEnv is appended to Trino containers.
+	// +optional
+	ExtraEnv []corev1.EnvVar `json:"extraEnv,omitempty"`
+
+	// resources are compute resource requirements for worker pods.
+	// +optional
+	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// service exposes the coordinator.
+	// +optional
+	Service ServiceSpec `json:"service"`
+}
+
+// TrinoCoordinatorSpec configures the coordinator pod.
+type TrinoCoordinatorSpec struct {
+	// resources are compute resource requirements for the coordinator container.
+	// +optional
+	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+}
+
+// ServiceSpec configures a Kubernetes Service.
+type ServiceSpec struct {
+	// type is the Service type.
+	// +optional
+	// +kubebuilder:default=ClusterIP
+	Type corev1.ServiceType `json:"type,omitempty"`
 }
 
 // DataPlatformStatus defines the observed state of DataPlatform.
 type DataPlatformStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-
-	// For Kubernetes API conventions, see:
-	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
-
 	// conditions represent the current state of the DataPlatform resource.
-	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
 	//
 	// Standard condition types include:
-	// - "Available": the resource is fully functional
-	// - "Progressing": the resource is being created or updated
-	// - "Degraded": the resource failed to reach or maintain its desired state
+	// - "Ready": every enabled component is fully functional
+	// - "MinioReady": in-cluster MinIO is ready, or an external object store is configured
+	// - "PostgresReady": the catalog database is usable
+	// - "LakekeeperReady": the catalog Deployment is ready
+	// - "WarehouseReady": the Iceberg warehouse has been created
+	// - "TrinoReady": the Trino coordinator is ready
 	//
 	// The status of each condition is one of True, False, or Unknown.
 	// +listType=map
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// minioEndpoint is the in-cluster S3 API URL when MinIO is embedded.
+	// +optional
+	MinioEndpoint string `json:"minioEndpoint,omitempty"`
+
+	// lakekeeperEndpoint is the in-cluster HTTP URL of the catalog.
+	// +optional
+	LakekeeperEndpoint string `json:"lakekeeperEndpoint,omitempty"`
+
+	// trinoEndpoint is the in-cluster HTTP URL of the Trino coordinator.
+	// +optional
+	TrinoEndpoint string `json:"trinoEndpoint,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=".status.conditions[?(@.type=='Ready')].status"
+// +kubebuilder:printcolumn:name="Lakekeeper",type=string,JSONPath=".status.lakekeeperEndpoint"
+// +kubebuilder:printcolumn:name="Trino",type=string,JSONPath=".status.trinoEndpoint"
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 
-// DataPlatform is the Schema for the dataplatforms API
+// DataPlatform is the Schema for the dataplatforms API.
 type DataPlatform struct {
 	metav1.TypeMeta `json:",inline"`
 

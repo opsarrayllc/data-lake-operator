@@ -6,4 +6,52 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: dataplatform-sample
 spec:
-  # TODO(user): Add fields here
+  # Object storage. MinIO is deployed by default.
+  # Set embedded: false and fill s3 to use AWS S3 or another existing store.
+  storage:
+    embedded: true
+    minio:
+      # namespace: minio
+      # bucket: warehouse
+      # storageSize: 20Gi
+    # embedded: false
+    # s3:
+    #   bucket: my-bucket
+    #   region: us-east-1
+    #   flavor: aws          # or s3-compat
+    #   endpoint: http://minio.minio.svc:9000
+    #   pathStyleAccess: true
+    #   stsEnabled: false
+    #   credentialsSecretRef:
+    #     name: s3-credentials
+    #     namespace: lakekeeper
+  # Iceberg REST catalog. Namespace defaults to "lakekeeper".
+  # Use a unique namespace if you create more than one DataPlatform.
+  lakekeeper:
+    enabled: true
+    # image: quay.io/lakekeeper/catalog:v0.13.3
+    # replicas: 1
+    postgres:
+      embedded: true
+      # storageSize: 10Gi
+      # To use an existing database instead:
+      # embedded: false
+      # host: postgres.example.svc
+      # port: 5432
+      # database: lakekeeper
+      # credentialsSecretRef:
+      #   name: postgres-credentials
+    warehouse:
+      name: default
+  # Query engine. Namespace defaults to "trino".
+  trino:
+    enabled: true
+    # image: trinodb/trino:476
+    workers: 0
+    # extraConfig:
+    #   query.max-memory: 1GB
+    # extraCatalogs:
+    #   tpch: |
+    #     connector.name=tpch
+    service:
+      type: ClusterIP
