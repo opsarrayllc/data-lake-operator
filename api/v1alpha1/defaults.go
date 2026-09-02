@@ -16,7 +16,11 @@ limitations under the License.
 
 package v1alpha1
 
-import corev1 "k8s.io/api/core/v1"
+import (
+	"strings"
+
+	corev1 "k8s.io/api/core/v1"
+)
 
 func boolDefaultTrue(v *bool) bool {
 	if v == nil {
@@ -163,6 +167,59 @@ func (s *S3CredentialsSecretRef) AccessKeyIDKeyOrDefault() string {
 // SecretAccessKeyKeyOrDefault returns the Secret key for the secret access key.
 func (s *S3CredentialsSecretRef) SecretAccessKeyKeyOrDefault() string {
 	return stringOrDefault(s.SecretAccessKeyKey, "AWS_SECRET_ACCESS_KEY")
+}
+
+// IsEnabled reports whether OIDC should be configured. Nil defaults to true.
+func (s *AuthSpec) IsEnabled() bool {
+	return boolDefaultTrue(s.Enabled)
+}
+
+// IsEmbedded reports whether Keycloak should be operator-managed. Nil defaults to true.
+func (s *AuthSpec) IsEmbedded() bool {
+	return boolDefaultTrue(s.Embedded)
+}
+
+// NamespaceOrDefault returns the Keycloak namespace.
+func (s *KeycloakSpec) NamespaceOrDefault() string {
+	return stringOrDefault(s.Namespace, DefaultKeycloakNamespace)
+}
+
+// ImageOrDefault returns the Keycloak image.
+func (s *KeycloakSpec) ImageOrDefault() string {
+	return stringOrDefault(s.Image, DefaultKeycloakImage)
+}
+
+// RealmOrDefault returns the Keycloak realm name.
+func (s *KeycloakSpec) RealmOrDefault() string {
+	return stringOrDefault(s.Realm, DefaultOIDCRealm)
+}
+
+// AudienceOrDefault returns the expected JWT audience.
+func (s *OIDCSpec) AudienceOrDefault() string {
+	return stringOrDefault(s.Audience, DefaultOIDCAudience)
+}
+
+// ClientIDOrDefault returns the primary OIDC client ID.
+func (s *OIDCSpec) ClientIDOrDefault() string {
+	return stringOrDefault(s.ClientID, DefaultOIDCClientID)
+}
+
+// ScopeOrDefault returns the OAuth2 scope.
+func (s *OIDCSpec) ScopeOrDefault() string {
+	return stringOrDefault(s.Scope, DefaultOIDCScope)
+}
+
+// TokenEndpointOrDefault returns the token URL.
+func (s *OIDCSpec) TokenEndpointOrDefault() string {
+	if s.TokenEndpoint != "" {
+		return s.TokenEndpoint
+	}
+	return strings.TrimRight(s.Issuer, "/") + "/protocol/openid-connect/token"
+}
+
+// ClientSecretKeyOrDefault returns the Secret key for the OIDC client secret.
+func (s *OIDCCredentialsSecretRef) ClientSecretKeyOrDefault() string {
+	return stringOrDefault(s.ClientSecretKey, "clientSecret")
 }
 
 // UsernameKeyOrDefault returns the Secret key for the database user.

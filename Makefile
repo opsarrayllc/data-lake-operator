@@ -194,6 +194,20 @@ deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	"$(KUSTOMIZE)" build config/default | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -
 
+##@ Kind
+
+KIND_DEV_CLUSTER ?= data-lake-dev
+KIND_DEV_CONFIG ?= config/kind/kind-data-lake-dev.yaml
+
+.PHONY: kind-up
+kind-up: ## Recreate the local kind cluster with ingress-nginx, mkcert TLS, and CRDs.
+	KIND_DEV_CLUSTER="$(KIND_DEV_CLUSTER)" KIND_DEV_CONFIG="$(KIND_DEV_CONFIG)" \
+		KIND="$(KIND)" KUBECTL="$(KUBECTL)" ./hack/setup-kind-dev.sh
+
+.PHONY: kind-down
+kind-down: ## Delete the local kind cluster created by kind-up.
+	$(KIND) delete cluster --name $(KIND_DEV_CLUSTER)
+
 ##@ Dependencies
 
 ## Location to install dependencies to

@@ -1,15 +1,21 @@
-# Local DataPlatform for kind (embedded MinIO + Postgres, coordinator-only Trino).
+# Local DataPlatform for kind (embedded MinIO + Postgres + Keycloak, coordinator-only Trino).
 #
-#   make install
+#   make kind-up      # recreate cluster, ingress, mkcert TLS, CRDs
 #   make run          # or: make deploy IMG=...
-#   kubectl apply -f config/samples/dataplatform_v1alpha1_local.yaml
+#   kubectl --context kind-data-lake-dev apply -f config/samples/dataplatform_v1alpha1_local.yaml
 #
-# Workloads land in namespaces minio, lakekeeper, and trino.
+# Hosts (also printed by kind-up): 127.0.0.1 keycloak.data-lake.local lakekeeper.data-lake.local trino.data-lake.local
+# Login user admin; password is in secret keycloak/keycloak-admin.
 apiVersion: dataplatform.opsarray.io/v1alpha1
 kind: DataPlatform
 metadata:
   name: local
 spec:
+  auth:
+    embedded: true
+    keycloak:
+      namespace: keycloak
+      publicURL: https://keycloak.data-lake.local
   storage:
     embedded: true
     minio:

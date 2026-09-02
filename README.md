@@ -3,7 +3,11 @@
 Kubernetes operator that deploys the resources needed to bootstrap a data platform.
 
 Goals:
-* Cross platform
+* OIDC immediately
+  * Keycloak locally
+  * OIDC Configuration overrides
+* Fine-Grained Authorization immediately
+  * OpenFGA
 * Runs on as many cloud platforms as we can reasonably test on
 * Open Source Utilities
 * Cost should be negligible and scale appropriately

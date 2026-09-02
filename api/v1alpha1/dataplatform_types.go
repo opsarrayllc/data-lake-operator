@@ -35,15 +35,19 @@ const (
 	ConditionTrinoReady = "TrinoReady"
 	// ConditionMinioReady is True when in-cluster MinIO is usable, or when using an external store.
 	ConditionMinioReady = "MinioReady"
+	// ConditionAuthReady is True when the identity provider is usable, or when auth is disabled.
+	ConditionAuthReady = "AuthReady"
 
 	DefaultLakekeeperNamespace = "lakekeeper"
 	DefaultTrinoNamespace      = "trino"
 	DefaultMinioNamespace      = "minio"
+	DefaultKeycloakNamespace   = "keycloak"
 	DefaultLakekeeperImage     = "quay.io/lakekeeper/catalog:v0.13.3"
 	DefaultTrinoImage          = "trinodb/trino:476"
 	DefaultPostgresImage       = "postgres:17"
 	DefaultMinioImage          = "minio/minio:RELEASE.2025-04-22T22-12-26Z"
 	DefaultMcImage             = "minio/mc:RELEASE.2025-04-16T18-13-26Z"
+	DefaultKeycloakImage       = "quay.io/keycloak/keycloak:26.3.3"
 	DefaultWarehouseName       = "default"
 	DefaultPostgresStorage     = "10Gi"
 	DefaultMinioStorage        = "20Gi"
@@ -51,6 +55,13 @@ const (
 	DefaultS3Flavor            = "aws"
 	DefaultS3CompatFlavor      = "s3-compat"
 	DefaultS3CompatRegion      = "us-east-1"
+	DefaultOIDCRealm           = "dataplatform"
+	DefaultOIDCAudience        = "lakekeeper"
+	DefaultOIDCClientID        = "lakekeeper"
+	DefaultOIDCTrinoClientID   = "trino"
+	DefaultOIDCOperatorClient  = "operator"
+	DefaultOIDCScope           = "lakekeeper"
+	DefaultOIDCAdminUser       = "admin"
 )
 
 // DataPlatformSpec defines the desired state of DataPlatform.
@@ -60,6 +71,11 @@ type DataPlatformSpec struct {
 	// +optional
 	Storage StorageSpec `json:"storage"`
 
+	// auth configures OIDC. By default the operator deploys Keycloak for local
+	// use. Set embedded to false and fill oidc to use Okta, JumpCloud, or another IdP.
+	// +optional
+	Auth AuthSpec `json:"auth"`
+
 	// lakekeeper configures the Iceberg REST catalog.
 	// +optional
 	Lakekeeper LakekeeperSpec `json:"lakekeeper"`
@@ -67,6 +83,110 @@ type DataPlatformSpec struct {
 	// trino configures the query engine.
 	// +optional
 	Trino TrinoSpec `json:"trino"`
+}
+
+// AuthSpec configures identity for LakeKeeper and Trino.
+// By default the operator deploys Keycloak. Set embedded to false and fill oidc
+// to use an existing provider such as Okta or JumpCloud.
+type AuthSpec struct {
+	// enabled turns on OIDC for LakeKeeper and the Trino Iceberg catalog.
+	// Defaults to true.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// embedded deploys Keycloak in its own namespace. Defaults to true when auth is enabled.
+	// +optional
+	Embedded *bool `json:"embedded,omitempty"`
+
+	// keycloak configures the operator-managed Keycloak instance.
+	// +optional
+	Keycloak KeycloakSpec `json:"keycloak"`
+
+	// oidc is required when embedded is false.
+	// +optional
+	OIDC *OIDCSpec `json:"oidc,omitempty"`
+}
+
+// KeycloakSpec configures operator-managed Keycloak.
+type KeycloakSpec struct {
+	// namespace defaults to "keycloak". Use a unique value if you create multiple DataPlatforms.
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+
+	// image is the Keycloak container image.
+	// +optional
+	Image string `json:"image,omitempty"`
+
+	// realm is imported on first start. Defaults to "dataplatform".
+	// +optional
+	Realm string `json:"realm,omitempty"`
+
+	// publicURL is the Keycloak URL browsers use (for example http://localhost:8080 after port-forward).
+	// LakeKeeper's UI redirect uses this when set. In-cluster services always use the cluster DNS issuer.
+	// +optional
+	PublicURL string `json:"publicURL,omitempty"`
+
+	// resources are compute resource requirements for the Keycloak container.
+	// +optional
+	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+}
+
+// OIDCSpec points at an existing OpenID Connect provider (Okta, JumpCloud, Keycloak, ...).
+type OIDCSpec struct {
+	// issuer is the OIDC issuer URL (no trailing slash).
+	// Example (Okta): https://example.okta.com/oauth2/default
+	// Example (JumpCloud / Keycloak): https://idp.example.com/realms/company
+	// +kubebuilder:validation:MinLength=1
+	Issuer string `json:"issuer"`
+
+	// audience is the expected JWT aud claim. Defaults to "lakekeeper".
+	// +optional
+	Audience string `json:"audience,omitempty"`
+
+	// clientID is the OIDC client used by the LakeKeeper UI and, unless overridden
+	// in the credentials Secret, by Trino and the operator.
+	// +optional
+	ClientID string `json:"clientID,omitempty"`
+
+	// tokenEndpoint is the OAuth2 token URL. Defaults to issuer + "/protocol/openid-connect/token"
+	// (Keycloak / JumpCloud). Okta typically needs "/v1/token" on the authorization server.
+	// +optional
+	TokenEndpoint string `json:"tokenEndpoint,omitempty"`
+
+	// scope is requested during the client-credentials grant. Defaults to "lakekeeper".
+	// +optional
+	Scope string `json:"scope,omitempty"`
+
+	// credentialsSecretRef locates the client secret (and optional per-component client IDs).
+	// Namespace is required because DataPlatform is cluster-scoped.
+	// +optional
+	CredentialsSecretRef *OIDCCredentialsSecretRef `json:"credentialsSecretRef,omitempty"`
+}
+
+// OIDCCredentialsSecretRef locates a Secret with OIDC client credentials.
+type OIDCCredentialsSecretRef struct {
+	// name of the Secret.
+	Name string `json:"name"`
+
+	// namespace of the Secret.
+	Namespace string `json:"namespace"`
+
+	// clientSecretKey is the Secret key for the client secret.
+	// +optional
+	// +kubebuilder:default=clientSecret
+	ClientSecretKey string `json:"clientSecretKey,omitempty"`
+
+	// clientIDKey, if set, overrides spec.auth.oidc.clientID from the Secret.
+	// +optional
+	ClientIDKey string `json:"clientIDKey,omitempty"`
+
+	// trinoClientIDKey, if set, uses a separate confidential client for Trino.
+	// +optional
+	TrinoClientIDKey string `json:"trinoClientIDKey,omitempty"`
+
+	// trinoClientSecretKey, if set, uses a separate secret for the Trino client.
+	// +optional
+	TrinoClientSecretKey string `json:"trinoClientSecretKey,omitempty"`
 }
 
 // StorageSpec configures table data storage.
@@ -342,6 +462,7 @@ type DataPlatformStatus struct {
 	// Standard condition types include:
 	// - "Ready": every enabled component is fully functional
 	// - "MinioReady": in-cluster MinIO is ready, or an external object store is configured
+	// - "AuthReady": Keycloak is ready, an external OIDC issuer is configured, or auth is disabled
 	// - "PostgresReady": the catalog database is usable
 	// - "LakekeeperReady": the catalog Deployment is ready
 	// - "WarehouseReady": the Iceberg warehouse has been created
@@ -364,6 +485,10 @@ type DataPlatformStatus struct {
 	// trinoEndpoint is the in-cluster HTTP URL of the Trino coordinator.
 	// +optional
 	TrinoEndpoint string `json:"trinoEndpoint,omitempty"`
+
+	// keycloakEndpoint is the in-cluster HTTP URL of Keycloak when it is embedded.
+	// +optional
+	KeycloakEndpoint string `json:"keycloakEndpoint,omitempty"`
 }
 
 // +kubebuilder:object:root=true

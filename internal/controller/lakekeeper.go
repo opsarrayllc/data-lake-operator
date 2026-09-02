@@ -35,6 +35,7 @@ func (r *DataPlatformReconciler) reconcileLakekeeper(
 	ctx context.Context,
 	dp *dataplatformv1alpha1.DataPlatform,
 	conn postgresConn,
+	oidc oidcConfig,
 ) error {
 	ns := dp.Spec.Lakekeeper.NamespaceOrDefault()
 	dp.Status.LakekeeperEndpoint = clusterServiceURL(nameLakekeeper, ns, lakekeeperPort)
@@ -47,7 +48,7 @@ func (r *DataPlatformReconciler) reconcileLakekeeper(
 		setCondition(dp, dataplatformv1alpha1.ConditionLakekeeperReady, metav1.ConditionFalse, reasonError, err.Error())
 		return err
 	}
-	if err := r.applyLakekeeperDeployment(ctx, dp, ns, conn); err != nil {
+	if err := r.applyLakekeeperDeployment(ctx, dp, ns, conn, oidc); err != nil {
 		setCondition(dp, dataplatformv1alpha1.ConditionLakekeeperReady, metav1.ConditionFalse, reasonError, err.Error())
 		return err
 	}
@@ -108,11 +109,12 @@ func (r *DataPlatformReconciler) applyLakekeeperDeployment(
 	dp *dataplatformv1alpha1.DataPlatform,
 	ns string,
 	conn postgresConn,
+	oidc oidcConfig,
 ) error {
 	spec := dp.Spec.Lakekeeper
 	deploy := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: nameLakekeeper, Namespace: ns}}
 	labels := labelsFor(dp, componentLakekeeper)
-	env := lakekeeperEnv(dp, conn)
+	env := lakekeeperEnv(dp, conn, oidc)
 	env = append(env, spec.ExtraEnv...)
 
 	pgWait := fmt.Sprintf(
@@ -162,7 +164,7 @@ func (r *DataPlatformReconciler) applyLakekeeperDeployment(
 	})
 }
 
-func lakekeeperEnv(dp *dataplatformv1alpha1.DataPlatform, conn postgresConn) []corev1.EnvVar {
+func lakekeeperEnv(dp *dataplatformv1alpha1.DataPlatform, conn postgresConn, oidc oidcConfig) []corev1.EnvVar {
 	env := []corev1.EnvVar{
 		{
 			Name: keyEncryption,
@@ -180,6 +182,21 @@ func lakekeeperEnv(dp *dataplatformv1alpha1.DataPlatform, conn postgresConn) []c
 	}
 	if conn.SSLMode != "" {
 		env = append(env, corev1.EnvVar{Name: "LAKEKEEPER__PG_SSL_MODE", Value: conn.SSLMode})
+	}
+	if oidc.enabled {
+		env = append(env,
+			corev1.EnvVar{Name: "LAKEKEEPER__OPENID_PROVIDER_URI", Value: oidc.issuer},
+			corev1.EnvVar{Name: "LAKEKEEPER__OPENID_AUDIENCE", Value: oidc.audience},
+			corev1.EnvVar{Name: "LAKEKEEPER__UI__OPENID_CLIENT_ID", Value: oidc.uiClientID},
+			corev1.EnvVar{Name: "LAKEKEEPER__UI__OPENID_SCOPE", Value: oidc.scope},
+			corev1.EnvVar{Name: "LAKEKEEPER__AUTHZ_BACKEND", Value: "allowall"},
+		)
+		if oidc.publicIssuer != "" && oidc.publicIssuer != oidc.issuer {
+			env = append(env,
+				corev1.EnvVar{Name: "LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS", Value: oidc.publicIssuer},
+				corev1.EnvVar{Name: "LAKEKEEPER__UI__OPENID_PROVIDER_URI", Value: oidc.publicIssuer},
+			)
+		}
 	}
 	if dp.Spec.Lakekeeper.Postgres.IsEmbedded() {
 		env = append(env,

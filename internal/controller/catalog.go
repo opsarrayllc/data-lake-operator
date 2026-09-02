@@ -21,7 +21,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -29,10 +31,13 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-// CatalogClient talks to LakeKeeper's management API.
+// CatalogClient talks to LakeKeeper's management API and can POST form data
+// through the Kubernetes API service proxy (used for Keycloak token requests).
 type CatalogClient interface {
-	Bootstrap(ctx context.Context, namespace, service string, port int32) error
-	EnsureWarehouse(ctx context.Context, namespace, service string, port int32, req WarehouseRequest) error
+	Bootstrap(ctx context.Context, namespace, service string, port int32, bearer string) error
+	EnsureWarehouse(ctx context.Context, namespace, service string, port int32, bearer string, req WarehouseRequest) error
+	FormPost(ctx context.Context, namespace, service string, port int32, path string, form url.Values) (int, []byte, error)
+	FetchToken(ctx context.Context, tokenURL string, form url.Values) (int, []byte, error)
 }
 
 // WarehouseRequest is a LakeKeeper create-warehouse payload.
@@ -63,8 +68,8 @@ func NewProxyCatalogClient(cfg *rest.Config) (CatalogClient, error) {
 	return &proxyCatalogClient{restClient: cs.CoreV1().RESTClient()}, nil
 }
 
-func (c *proxyCatalogClient) Bootstrap(ctx context.Context, namespace, service string, port int32) error {
-	status, body, err := c.do(ctx, http.MethodPost, namespace, service, port, "management/v1/bootstrap",
+func (c *proxyCatalogClient) Bootstrap(ctx context.Context, namespace, service string, port int32, bearer string) error {
+	status, body, err := c.do(ctx, http.MethodPost, namespace, service, port, "management/v1/bootstrap", bearer,
 		map[string]any{"accept-terms-of-use": true})
 	if err != nil {
 		return err
@@ -75,8 +80,8 @@ func (c *proxyCatalogClient) Bootstrap(ctx context.Context, namespace, service s
 	return fmt.Errorf("bootstrap returned %d: %s", status, truncate(body))
 }
 
-func (c *proxyCatalogClient) EnsureWarehouse(ctx context.Context, namespace, service string, port int32, req WarehouseRequest) error {
-	status, body, err := c.do(ctx, http.MethodGet, namespace, service, port, "management/v1/warehouse", nil)
+func (c *proxyCatalogClient) EnsureWarehouse(ctx context.Context, namespace, service string, port int32, bearer string, req WarehouseRequest) error {
+	status, body, err := c.do(ctx, http.MethodGet, namespace, service, port, "management/v1/warehouse", bearer, nil)
 	if err != nil {
 		return err
 	}
@@ -84,7 +89,7 @@ func (c *proxyCatalogClient) EnsureWarehouse(ctx context.Context, namespace, ser
 		return nil
 	}
 	payload := warehouseCreateJSON(req)
-	status, body, err = c.do(ctx, http.MethodPost, namespace, service, port, "management/v1/warehouse", payload)
+	status, body, err = c.do(ctx, http.MethodPost, namespace, service, port, "management/v1/warehouse", bearer, payload)
 	if err != nil {
 		return err
 	}
@@ -94,11 +99,52 @@ func (c *proxyCatalogClient) EnsureWarehouse(ctx context.Context, namespace, ser
 	return fmt.Errorf("create warehouse returned %d: %s", status, truncate(body))
 }
 
+func (c *proxyCatalogClient) FormPost(ctx context.Context, namespace, service string, port int32, path string, form url.Values) (int, []byte, error) {
+	name := service + ":" + strconv.Itoa(int(port))
+	req := c.restClient.Post().
+		Namespace(namespace).
+		Resource("services").
+		Name(name).
+		SubResource("proxy").
+		Suffix(path).
+		SetHeader("Content-Type", "application/x-www-form-urlencoded").
+		Body([]byte(form.Encode()))
+	result := req.Do(ctx)
+	var statusCode int
+	result.StatusCode(&statusCode)
+	raw, err := result.Raw()
+	if err != nil && statusCode == 0 {
+		return 0, nil, err
+	}
+	if raw == nil && err != nil {
+		raw = []byte(err.Error())
+	}
+	return statusCode, raw, nil
+}
+
+func (c *proxyCatalogClient) FetchToken(ctx context.Context, tokenURL string, form url.Values) (int, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return 0, nil, err
+	}
+	return resp.StatusCode, raw, nil
+}
+
 func (c *proxyCatalogClient) do(
 	ctx context.Context,
 	method, namespace, service string,
 	port int32,
-	path string,
+	path, bearer string,
 	payload any,
 ) (int, []byte, error) {
 	name := service + ":" + strconv.Itoa(int(port))
@@ -109,6 +155,9 @@ func (c *proxyCatalogClient) do(
 		SubResource("proxy").
 		Suffix(path).
 		SetHeader("Content-Type", "application/json")
+	if bearer != "" {
+		req = req.SetHeader("Authorization", "Bearer "+bearer)
+	}
 	if payload != nil {
 		raw, err := json.Marshal(payload)
 		if err != nil {
@@ -131,7 +180,7 @@ func (c *proxyCatalogClient) do(
 
 func warehouseCreateJSON(req WarehouseRequest) map[string]any {
 	profile := map[string]any{
-		"type":        "s3",
+		"type":        "s3", //nolint:goconst
 		"bucket":      req.Bucket,
 		"region":      req.Region,
 		"flavor":      req.Flavor,
@@ -153,7 +202,7 @@ func warehouseCreateJSON(req WarehouseRequest) map[string]any {
 		"warehouse-name":  req.Name,
 		"storage-profile": profile,
 		"storage-credential": map[string]any{
-			"type":                  "s3",
+			"type":                  "s3", //nolint:goconst
 			"credential-type":       "access-key",
 			"aws-access-key-id":     req.AccessKeyID,
 			"aws-secret-access-key": req.SecretAccessKey,

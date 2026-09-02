@@ -25,6 +25,23 @@ spec:
     #   credentialsSecretRef:
     #     name: s3-credentials
     #     namespace: lakekeeper
+  # Identity. Keycloak is deployed by default.
+  # Set embedded: false and fill oidc for Okta, JumpCloud, or another IdP.
+  auth:
+    embedded: true
+    keycloak:
+      # namespace: keycloak
+      # publicURL: http://localhost:8080
+    # embedded: false
+    # oidc:
+    #   issuer: https://example.okta.com/oauth2/default
+    #   audience: lakekeeper
+    #   clientID: lakekeeper
+    #   tokenEndpoint: https://example.okta.com/oauth2/default/v1/token
+    #   scope: lakekeeper
+    #   credentialsSecretRef:
+    #     name: oidc-credentials
+    #     namespace: lakekeeper
   # Iceberg REST catalog. Namespace defaults to "lakekeeper".
   # Use a unique namespace if you create more than one DataPlatform.
   lakekeeper:

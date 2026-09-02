@@ -37,11 +37,11 @@ import (
 	dataplatformv1alpha1 "github.com/opsarrayllc/data-platform-operator/api/v1alpha1"
 )
 
-func (r *DataPlatformReconciler) reconcileTrino(ctx context.Context, dp *dataplatformv1alpha1.DataPlatform, store objectStore) error {
+func (r *DataPlatformReconciler) reconcileTrino(ctx context.Context, dp *dataplatformv1alpha1.DataPlatform, store objectStore, oidc oidcConfig) error {
 	ns := dp.Spec.Trino.NamespaceOrDefault()
 	dp.Status.TrinoEndpoint = clusterServiceURL(nameTrino, ns, trinoPort)
 
-	catalogData, catalogHash := r.trinoCatalogData(ctx, dp, store)
+	catalogData, catalogHash := r.trinoCatalogData(ctx, dp, store, oidc)
 
 	coordCfg := trinoConfigProperties(true, dp.Spec.Trino.WorkersOrDefault() == 0, ns, dp.Spec.Trino.ExtraConfig)
 	workerCfg := trinoConfigProperties(false, false, ns, dp.Spec.Trino.ExtraConfig)
@@ -112,12 +112,13 @@ func (r *DataPlatformReconciler) trinoCatalogData(
 	ctx context.Context,
 	dp *dataplatformv1alpha1.DataPlatform,
 	store objectStore,
+	oidc oidcConfig,
 ) (map[string][]byte, string) {
 	data := map[string][]byte{}
 	parts := make([]string, 0, 4)
 
 	if dp.Spec.Lakekeeper.IsEnabled() {
-		props := lakekeeperCatalogProperties(dp, store)
+		props := lakekeeperCatalogProperties(dp, store, oidc)
 		data[nameLakekeeper+".properties"] = []byte(props)
 		parts = append(parts, props)
 	}
@@ -132,7 +133,7 @@ func (r *DataPlatformReconciler) trinoCatalogData(
 	return data, hashData(parts...)
 }
 
-func lakekeeperCatalogProperties(dp *dataplatformv1alpha1.DataPlatform, store objectStore) string {
+func lakekeeperCatalogProperties(dp *dataplatformv1alpha1.DataPlatform, store objectStore, oidc oidcConfig) string {
 	lkNS := dp.Spec.Lakekeeper.NamespaceOrDefault()
 	uri := clusterServiceURL(nameLakekeeper, lkNS, lakekeeperPort) + "/catalog"
 	props := map[string]string{
@@ -145,6 +146,14 @@ func lakekeeperCatalogProperties(dp *dataplatformv1alpha1.DataPlatform, store ob
 		"fs.native-s3.enabled":                            strconv.FormatBool(true),
 		"s3.region":                                       store.Region,
 		"iceberg.rest-catalog.vended-credentials-enabled": strconv.FormatBool(store.STSEnabled),
+	}
+	if oidc.enabled {
+		props["iceberg.rest-catalog.security"] = "OAUTH2"
+		props["iceberg.rest-catalog.oauth2.credential"] = oidc.trinoClientID + ":" + oidc.trinoSecret
+		props["iceberg.rest-catalog.oauth2.server-uri"] = oidc.tokenURL
+		if oidc.scope != "" {
+			props["iceberg.rest-catalog.oauth2.scope"] = oidc.scope
+		}
 	}
 	if !store.STSEnabled {
 		props["s3.aws-access-key"] = store.AccessKeyID
@@ -292,7 +301,7 @@ func trinoPodSpec(image, configKey string, resources corev1.ResourceRequirements
 			Ports: []corev1.ContainerPort{{Name: portNameHTTP, ContainerPort: trinoPort}},
 			Env:   env,
 			VolumeMounts: []corev1.VolumeMount{
-				{Name: "config", MountPath: "/etc/trino/config.properties", SubPath: configKey},
+				{Name: volumeConfig, MountPath: "/etc/trino/config.properties", SubPath: configKey},
 				{Name: "catalog", MountPath: "/etc/trino/catalog"},
 			},
 			ReadinessProbe: &corev1.Probe{
@@ -309,7 +318,7 @@ func trinoPodSpec(image, configKey string, resources corev1.ResourceRequirements
 		}},
 		Volumes: []corev1.Volume{
 			{
-				Name: "config",
+				Name: volumeConfig,
 				VolumeSource: corev1.VolumeSource{
 					ConfigMap: &corev1.ConfigMapVolumeSource{
 						LocalObjectReference: corev1.LocalObjectReference{Name: configMapTrino},

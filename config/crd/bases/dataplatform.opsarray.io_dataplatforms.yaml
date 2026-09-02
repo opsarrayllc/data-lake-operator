@@ -52,6 +52,165 @@ spec:
           spec:
             description: spec defines the desired state of DataPlatform
             properties:
+              auth:
+                description: |-
+                  auth configures OIDC. By default the operator deploys Keycloak for local
+                  use. Set embedded to false and fill oidc to use Okta, JumpCloud, or another IdP.
+                properties:
+                  embedded:
+                    description: embedded deploys Keycloak in its own namespace. Defaults
+                      to true when auth is enabled.
+                    type: boolean
+                  enabled:
+                    description: |-
+                      enabled turns on OIDC for LakeKeeper and the Trino Iceberg catalog.
+                      Defaults to true.
+                    type: boolean
+                  keycloak:
+                    description: keycloak configures the operator-managed Keycloak
+                      instance.
+                    properties:
+                      image:
+                        description: image is the Keycloak container image.
+                        type: string
+                      namespace:
+                        description: namespace defaults to "keycloak". Use a unique
+                          value if you create multiple DataPlatforms.
+                        type: string
+                      publicURL:
+                        description: |-
+                          publicURL is the Keycloak URL browsers use (for example http://localhost:8080 after port-forward).
+                          LakeKeeper's UI redirect uses this when set. In-cluster services always use the cluster DNS issuer.
+                        type: string
+                      realm:
+                        description: realm is imported on first start. Defaults to
+                          "dataplatform".
+                        type: string
+                      resources:
+                        description: resources are compute resource requirements for
+                          the Keycloak container.
+                        properties:
+                          claims:
+                            description: |-
+                              Claims lists the names of resources, defined in spec.resourceClaims,
+                              that are used by this container.
+
+                              This field depends on the
+                              DynamicResourceAllocation feature gate.
+
+                              This field is immutable. It can only be set for containers.
+                            items:
+                              description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                              properties:
+                                name:
+                                  description: |-
+                                    Name must match the name of one entry in pod.spec.resourceClaims of
+                                    the Pod where this field is used. It makes that resource available
+                                    inside a container.
+                                  type: string
+                                request:
+                                  description: |-
+                                    Request is the name chosen for a request in the referenced claim.
+                                    If empty, everything from the claim is made available, otherwise
+                                    only the result of this request.
+                                  type: string
+                              required:
+                              - name
+                              type: object
+                            type: array
+                            x-kubernetes-list-map-keys:
+                            - name
+                            x-kubernetes-list-type: map
+                          limits:
+                            additionalProperties:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                            description: |-
+                              Limits describes the maximum amount of compute resources allowed.
+                              More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                            type: object
+                          requests:
+                            additionalProperties:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                            description: |-
+                              Requests describes the minimum amount of compute resources required.
+                              If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                              otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                              More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                            type: object
+                        type: object
+                    type: object
+                  oidc:
+                    description: oidc is required when embedded is false.
+                    properties:
+                      audience:
+                        description: audience is the expected JWT aud claim. Defaults
+                          to "lakekeeper".
+                        type: string
+                      clientID:
+                        description: |-
+                          clientID is the OIDC client used by the LakeKeeper UI and, unless overridden
+                          in the credentials Secret, by Trino and the operator.
+                        type: string
+                      credentialsSecretRef:
+                        description: |-
+                          credentialsSecretRef locates the client secret (and optional per-component client IDs).
+                          Namespace is required because DataPlatform is cluster-scoped.
+                        properties:
+                          clientIDKey:
+                            description: clientIDKey, if set, overrides spec.auth.oidc.clientID
+                              from the Secret.
+                            type: string
+                          clientSecretKey:
+                            default: clientSecret
+                            description: clientSecretKey is the Secret key for the
+                              client secret.
+                            type: string
+                          name:
+                            description: name of the Secret.
+                            type: string
+                          namespace:
+                            description: namespace of the Secret.
+                            type: string
+                          trinoClientIDKey:
+                            description: trinoClientIDKey, if set, uses a separate
+                              confidential client for Trino.
+                            type: string
+                          trinoClientSecretKey:
+                            description: trinoClientSecretKey, if set, uses a separate
+                              secret for the Trino client.
+                            type: string
+                        required:
+                        - name
+                        - namespace
+                        type: object
+                      issuer:
+                        description: |-
+                          issuer is the OIDC issuer URL (no trailing slash).
+                          Example (Okta): https://example.okta.com/oauth2/default
+                          Example (JumpCloud / Keycloak): https://idp.example.com/realms/company
+                        minLength: 1
+                        type: string
+                      scope:
+                        description: scope is requested during the client-credentials
+                          grant. Defaults to "lakekeeper".
+                        type: string
+                      tokenEndpoint:
+                        description: |-
+                          tokenEndpoint is the OAuth2 token URL. Defaults to issuer + "/protocol/openid-connect/token"
+                          (Keycloak / JumpCloud). Okta typically needs "/v1/token" on the authorization server.
+                        type: string
+                    required:
+                    - issuer
+                    type: object
+                type: object
               lakekeeper:
                 description: lakekeeper configures the Iceberg REST catalog.
                 properties:
@@ -845,6 +1004,7 @@ spec:
                   Standard condition types include:
                   - "Ready": every enabled component is fully functional
                   - "MinioReady": in-cluster MinIO is ready, or an external object store is configured
+                  - "AuthReady": Keycloak is ready, an external OIDC issuer is configured, or auth is disabled
                   - "PostgresReady": the catalog database is usable
                   - "LakekeeperReady": the catalog Deployment is ready
                   - "WarehouseReady": the Iceberg warehouse has been created
@@ -909,6 +1069,10 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              keycloakEndpoint:
+                description: keycloakEndpoint is the in-cluster HTTP URL of Keycloak
+                  when it is embedded.
+                type: string
               lakekeeperEndpoint:
                 description: lakekeeperEndpoint is the in-cluster HTTP URL of the
                   catalog.

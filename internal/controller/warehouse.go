@@ -25,15 +25,21 @@ import (
 	dataplatformv1alpha1 "github.com/opsarrayllc/data-platform-operator/api/v1alpha1"
 )
 
-func (r *DataPlatformReconciler) reconcileWarehouse(ctx context.Context, dp *dataplatformv1alpha1.DataPlatform, store objectStore) error {
+func (r *DataPlatformReconciler) reconcileWarehouse(ctx context.Context, dp *dataplatformv1alpha1.DataPlatform, store objectStore, oidc oidcConfig) error {
 	log := logf.FromContext(ctx)
 	if r.Catalog == nil {
 		setCondition(dp, dataplatformv1alpha1.ConditionWarehouseReady, metav1.ConditionFalse, reasonMissing, "Catalog client is not configured")
 		return nil
 	}
 
+	token, err := r.oidcAccessToken(ctx, oidc)
+	if err != nil {
+		setCondition(dp, dataplatformv1alpha1.ConditionWarehouseReady, metav1.ConditionFalse, reasonError, err.Error())
+		return err
+	}
+
 	ns := dp.Spec.Lakekeeper.NamespaceOrDefault()
-	if err := r.Catalog.Bootstrap(ctx, ns, nameLakekeeper, lakekeeperPort); err != nil {
+	if err := r.Catalog.Bootstrap(ctx, ns, nameLakekeeper, lakekeeperPort, token); err != nil {
 		setCondition(dp, dataplatformv1alpha1.ConditionWarehouseReady, metav1.ConditionFalse, reasonError, err.Error())
 		return err
 	}
@@ -50,7 +56,7 @@ func (r *DataPlatformReconciler) reconcileWarehouse(ctx context.Context, dp *dat
 		AccessKeyID:     store.AccessKeyID,
 		SecretAccessKey: store.SecretAccessKey,
 	}
-	if err := r.Catalog.EnsureWarehouse(ctx, ns, nameLakekeeper, lakekeeperPort, req); err != nil {
+	if err := r.Catalog.EnsureWarehouse(ctx, ns, nameLakekeeper, lakekeeperPort, token, req); err != nil {
 		setCondition(dp, dataplatformv1alpha1.ConditionWarehouseReady, metav1.ConditionFalse, reasonError, err.Error())
 		return err
 	}
