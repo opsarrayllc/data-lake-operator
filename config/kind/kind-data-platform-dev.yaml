@@ -1,7 +1,7 @@
 # Local kind cluster with host 80/443 mapped into the control plane for ingress-nginx.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
-name: data-lake-dev
+name: data-platform-dev
 nodes:
 - role: control-plane
   kubeadmConfigPatches:

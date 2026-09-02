@@ -14,10 +14,10 @@ spec:
   ingressClassName: nginx
   tls:
   - hosts:
-    - keycloak.data-lake.local
-    secretName: data-lake-tls
+    - keycloak.data-platform.local
+    secretName: data-platform-tls
   rules:
-  - host: keycloak.data-lake.local
+  - host: keycloak.data-platform.local
     http:
       paths:
       - path: /
@@ -40,10 +40,10 @@ spec:
   ingressClassName: nginx
   tls:
   - hosts:
-    - lakekeeper.data-lake.local
-    secretName: data-lake-tls
+    - lakekeeper.data-platform.local
+    secretName: data-platform-tls
   rules:
-  - host: lakekeeper.data-lake.local
+  - host: lakekeeper.data-platform.local
     http:
       paths:
       - path: /
@@ -66,10 +66,10 @@ spec:
   ingressClassName: nginx
   tls:
   - hosts:
-    - trino.data-lake.local
-    secretName: data-lake-tls
+    - trino.data-platform.local
+    secretName: data-platform-tls
   rules:
-  - host: trino.data-lake.local
+  - host: trino.data-platform.local
     http:
       paths:
       - path: /

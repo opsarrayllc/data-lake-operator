@@ -196,8 +196,8 @@ undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.
 
 ##@ Kind
 
-KIND_DEV_CLUSTER ?= data-lake-dev
-KIND_DEV_CONFIG ?= config/kind/kind-data-lake-dev.yaml
+KIND_DEV_CLUSTER ?= data-platform-dev
+KIND_DEV_CONFIG ?= config/kind/kind-data-platform-dev.yaml
 
 .PHONY: kind-up
 kind-up: ## Recreate the local kind cluster with ingress-nginx, mkcert TLS, and CRDs.

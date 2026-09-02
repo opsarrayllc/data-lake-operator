@@ -2,9 +2,9 @@
 #
 #   make kind-up      # recreate cluster, ingress, mkcert TLS, CRDs
 #   make run          # or: make deploy IMG=...
-#   kubectl --context kind-data-lake-dev apply -f config/samples/dataplatform_v1alpha1_local.yaml
+#   kubectl --context kind-data-platform-dev apply -f config/samples/dataplatform_v1alpha1_local.yaml
 #
-# Hosts (also printed by kind-up): 127.0.0.1 keycloak.data-lake.local lakekeeper.data-lake.local trino.data-lake.local
+# Hosts (also printed by kind-up): 127.0.0.1 keycloak.data-platform.local lakekeeper.data-platform.local trino.data-platform.local
 # Login user admin; password is in secret keycloak/keycloak-admin.
 apiVersion: dataplatform.opsarray.io/v1alpha1
 kind: DataPlatform
@@ -15,7 +15,7 @@ spec:
     embedded: true
     keycloak:
       namespace: keycloak
-      publicURL: https://keycloak.data-lake.local
+      publicURL: https://keycloak.data-platform.local
   storage:
     embedded: true
     minio:

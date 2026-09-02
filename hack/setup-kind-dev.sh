@@ -3,17 +3,17 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CLUSTER="${KIND_DEV_CLUSTER:-data-lake-dev}"
-CONFIG="${KIND_DEV_CONFIG:-config/kind/kind-data-lake-dev.yaml}"
+CLUSTER="${KIND_DEV_CLUSTER:-data-platform-dev}"
+CONFIG="${KIND_DEV_CONFIG:-config/kind/kind-data-platform-dev.yaml}"
 INGRESS_MANIFEST="${KIND_INGRESS_MANIFEST:-config/kind/deploy-ingress-nginx.yaml}"
 INGRESS_RESOURCES="${KIND_INGRESS_RESOURCES:-config/kind/ingresses.yaml}"
-DOMAIN="${KIND_DEV_DOMAIN:-data-lake.local}"
+DOMAIN="${KIND_DEV_DOMAIN:-data-platform.local}"
 CONTEXT="${KIND_DEV_CONTEXT:-kind-${CLUSTER}}"
 KIND_BIN="${KIND:-kind}"
 KUBECTL_BIN="${KUBECTL:-kubectl}"
 CERT_DIR="${KIND_CERT_DIR:-${ROOT}/bin/certs}"
 KUBECONFIG_FILE="${KIND_KUBECONFIG:-${ROOT}/bin/kubeconfig-${CLUSTER}}"
-TLS_SECRET="${KIND_TLS_SECRET:-data-lake-tls}"
+TLS_SECRET="${KIND_TLS_SECRET:-data-platform-tls}"
 NAMESPACES=(keycloak lakekeeper trino)
 HOSTS=(keycloak lakekeeper trino)
 
@@ -58,8 +58,7 @@ fi
 
 echo "==> Installing ingress-nginx"
 kc apply -f "${INGRESS_MANIFEST}"
-kc -n ingress-nginx wait --for=condition=ready pod \
-	-l app.kubernetes.io/component=controller --timeout=180s
+kc -n ingress-nginx rollout status deployment/ingress-nginx-controller --timeout=180s
 
 echo "==> Issuing mkcert wildcard for *.${DOMAIN}"
 mkdir -p "${CERT_DIR}"
