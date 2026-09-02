@@ -58,6 +58,9 @@ linters:
         path: internal/controller/keycloak.go
       - linters:
           - goconst
+        path: internal/controller/trino.go
+      - linters:
+          - goconst
         path: .*_test.go
     paths:
       - third_party$

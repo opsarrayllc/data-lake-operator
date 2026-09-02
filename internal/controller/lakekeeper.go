@@ -193,7 +193,7 @@ func lakekeeperEnv(dp *dataplatformv1alpha1.DataPlatform, conn postgresConn, oid
 			corev1.EnvVar{Name: "LAKEKEEPER__OPENID_PROVIDER_URI", Value: oidc.issuer},
 			corev1.EnvVar{Name: "LAKEKEEPER__OPENID_AUDIENCE", Value: oidc.audience},
 			corev1.EnvVar{Name: "LAKEKEEPER__UI__OPENID_CLIENT_ID", Value: oidc.uiClientID},
-			corev1.EnvVar{Name: "LAKEKEEPER__UI__OPENID_SCOPE", Value: oidc.scope},
+			corev1.EnvVar{Name: "LAKEKEEPER__UI__OPENID_SCOPE", Value: lakekeeperUIScope(oidc.scope)},
 			corev1.EnvVar{Name: "LAKEKEEPER__AUTHZ_BACKEND", Value: "allowall"},
 		)
 		if oidc.publicIssuer != "" && oidc.publicIssuer != oidc.issuer {
@@ -238,4 +238,14 @@ func (r *DataPlatformReconciler) deploymentReady(ctx context.Context, ns, name s
 		return false, err
 	}
 	return deploy.Status.ReadyReplicas >= 1, nil
+}
+
+func lakekeeperUIScope(scope string) string {
+	if scope == "" {
+		return "openid"
+	}
+	if strings.Contains(scope, "openid") {
+		return scope
+	}
+	return "openid " + scope
 }

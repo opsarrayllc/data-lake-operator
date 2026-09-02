@@ -187,3 +187,11 @@ func oidcTokenPath(realm string) string {
 func oidcTokenURL(issuer string) string {
 	return strings.TrimRight(issuer, "/") + "/protocol/openid-connect/token"
 }
+
+func oidcAuthURL(issuer string) string {
+	return strings.TrimRight(issuer, "/") + "/protocol/openid-connect/auth"
+}
+
+func oidcJWKSURL(issuer string) string {
+	return strings.TrimRight(issuer, "/") + "/protocol/openid-connect/certs"
+}

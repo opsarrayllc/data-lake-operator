@@ -47,7 +47,8 @@ func (r *DataPlatformReconciler) reconcileKeycloak(ctx context.Context, dp *data
 		setCondition(dp, dataplatformv1alpha1.ConditionAuthReady, metav1.ConditionFalse, reasonError, err.Error())
 		return oidcConfig{}, false, err
 	}
-	if err := r.applyKeycloakRealm(ctx, dp, ns, spec); err != nil {
+	realmHash, err := r.applyKeycloakRealm(ctx, dp, ns, spec)
+	if err != nil {
 		setCondition(dp, dataplatformv1alpha1.ConditionAuthReady, metav1.ConditionFalse, reasonError, err.Error())
 		return oidcConfig{}, false, err
 	}
@@ -55,7 +56,7 @@ func (r *DataPlatformReconciler) reconcileKeycloak(ctx context.Context, dp *data
 		setCondition(dp, dataplatformv1alpha1.ConditionAuthReady, metav1.ConditionFalse, reasonError, err.Error())
 		return oidcConfig{}, false, err
 	}
-	if err := r.applyKeycloakDeployment(ctx, dp, ns, spec); err != nil {
+	if err := r.applyKeycloakDeployment(ctx, dp, ns, spec, realmHash); err != nil {
 		setCondition(dp, dataplatformv1alpha1.ConditionAuthReady, metav1.ConditionFalse, reasonError, err.Error())
 		return oidcConfig{}, false, err
 	}
@@ -174,33 +175,36 @@ func (r *DataPlatformReconciler) applyKeycloakRealm(
 	dp *dataplatformv1alpha1.DataPlatform,
 	ns string,
 	spec dataplatformv1alpha1.KeycloakSpec,
-) error {
+) (string, error) {
 	adminPass, err := r.getSecretData(ctx, secretKeycloakAdmin, ns, keyKeycloakAdminPassword)
 	if err != nil {
-		return err
+		return "", err
 	}
 	trinoSecret, err := r.getSecretData(ctx, secretOIDC, ns, keyOIDCTrinoClientSecret)
 	if err != nil {
-		return err
+		return "", err
 	}
 	operatorSecret, err := r.getSecretData(ctx, secretOIDC, ns, keyOIDCOperatorSecret)
 	if err != nil {
-		return err
+		return "", err
 	}
-	raw, err := keycloakRealmJSON(spec, adminPass, trinoSecret, operatorSecret, dp.Spec.Lakekeeper.NamespaceOrDefault())
+	raw, err := keycloakRealmJSON(spec, adminPass, trinoSecret, operatorSecret, dp.Spec.Lakekeeper.NamespaceOrDefault(), dp.Spec.Lakekeeper.PublicURL, dp.Spec.Trino.PublicURL)
 	if err != nil {
-		return err
+		return "", err
 	}
 	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: configMapKeycloakRealm, Namespace: ns}}
 	labels := labelsFor(dp, componentKeycloak)
-	return r.apply(ctx, dp, cm, func() error {
+	if err := r.apply(ctx, dp, cm, func() error {
 		ensureLabels(cm, labels)
 		if cm.Data == nil {
 			cm.Data = map[string]string{}
 		}
 		cm.Data[keyRealmJSON] = raw
 		return nil
-	})
+	}); err != nil {
+		return "", err
+	}
+	return hashData(raw), nil
 }
 
 func (r *DataPlatformReconciler) applyKeycloakService(ctx context.Context, dp *dataplatformv1alpha1.DataPlatform, ns string) error {
@@ -223,6 +227,7 @@ func (r *DataPlatformReconciler) applyKeycloakDeployment(
 	dp *dataplatformv1alpha1.DataPlatform,
 	ns string,
 	spec dataplatformv1alpha1.KeycloakSpec,
+	realmHash string,
 ) error {
 	deploy := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: nameKeycloak, Namespace: ns}}
 	labels := labelsFor(dp, componentKeycloak)
@@ -232,6 +237,10 @@ func (r *DataPlatformReconciler) applyKeycloakDeployment(
 			deploy.Spec.Selector = &metav1.LabelSelector{MatchLabels: labels}
 		}
 		deploy.Spec.Replicas = ptr.To(int32(1))
+		if deploy.Spec.Template.Annotations == nil {
+			deploy.Spec.Template.Annotations = map[string]string{}
+		}
+		deploy.Spec.Template.Annotations[annotationConfigHash] = realmHash
 		deploy.Spec.Template.Labels = labels
 		deploy.Spec.Template.Spec.SecurityContext = restrictedPodSecurity(uidKeycloak, gidKeycloak)
 		deploy.Spec.Template.Spec.Containers = []corev1.Container{{
@@ -312,7 +321,7 @@ func keycloakHostnameEnv(ns string, spec dataplatformv1alpha1.KeycloakSpec) []co
 	return env
 }
 
-func keycloakRealmJSON(spec dataplatformv1alpha1.KeycloakSpec, adminPass, trinoSecret, operatorSecret, lakekeeperNS string) (string, error) {
+func keycloakRealmJSON(spec dataplatformv1alpha1.KeycloakSpec, adminPass, trinoSecret, operatorSecret, lakekeeperNS, lakekeeperPublicURL, trinoPublicURL string) (string, error) {
 	realm := spec.RealmOrDefault()
 	lkCallback := clusterServiceURL(nameLakekeeper, lakekeeperNS, lakekeeperPort) + "/ui/callback"
 	redirects := []string{
@@ -321,8 +330,13 @@ func keycloakRealmJSON(spec dataplatformv1alpha1.KeycloakSpec, adminPass, trinoS
 		"http://127.0.0.1:8181/ui/callback",
 		"*",
 	}
-	if spec.PublicURL != "" {
-		redirects = append(redirects, spec.PublicURL+"/*")
+	if u := strings.TrimRight(lakekeeperPublicURL, "/"); u != "" {
+		redirects = append(redirects, u+"/ui/callback", u+"/*")
+	}
+
+	trinoRedirects := []string{}
+	if u := strings.TrimRight(trinoPublicURL, "/"); u != "" {
+		trinoRedirects = append(trinoRedirects, u+"/oauth2/callback")
 	}
 
 	doc := map[string]any{
@@ -335,30 +349,11 @@ func keycloakRealmJSON(spec dataplatformv1alpha1.KeycloakSpec, adminPass, trinoS
 				{"name": "default-roles-" + realm, "composite": true},
 			},
 		},
-		"clientScopes": []map[string]any{
-			{
-				"name":        dataplatformv1alpha1.DefaultOIDCScope,
-				"description": "Audience for LakeKeeper",
-				"protocol":    "openid-connect",
-				"attributes": map[string]string{
-					"include.in.token.scope":    "true",
-					"display.on.consent.screen": "false",
-				},
-				"protocolMappers": []map[string]any{
-					{
-						"name":           "audience-lakekeeper",
-						"protocol":       "openid-connect",
-						"protocolMapper": "oidc-audience-mapper",
-						"config": map[string]string{
-							"included.client.audience":  dataplatformv1alpha1.DefaultOIDCAudience,
-							"id.token.claim":            "false",
-							"access.token.claim":        "true",
-							"introspection.token.claim": "true",
-						},
-					},
-				},
-			},
-		},
+		// Keycloak 24+ only puts `sub` on access tokens via the `basic` scope.
+		// Importing a custom clientScopes list replaces the built-in scopes, so
+		// we must ship basic/profile/email ourselves.
+		"clientScopes":               oidcClientScopes(),
+		"defaultDefaultClientScopes": defaultOIDCClientScopes(),
 		"clients": []map[string]any{
 			{
 				"clientId":                  dataplatformv1alpha1.DefaultOIDCClientID,
@@ -371,15 +366,15 @@ func keycloakRealmJSON(spec dataplatformv1alpha1.KeycloakSpec, adminPass, trinoS
 				"serviceAccountsEnabled":    false,
 				"redirectUris":              redirects,
 				"webOrigins":                []string{"+"},
-				"defaultClientScopes":       []string{"openid", "profile", "email", dataplatformv1alpha1.DefaultOIDCScope},
+				"defaultClientScopes":       defaultOIDCClientScopes(),
 				"optionalClientScopes":      []string{},
 				"attributes": map[string]string{
 					"oauth2.device.authorization.grant.enabled": "true",
 					"pkce.code.challenge.method":                "S256",
 				},
 			},
-			confidentialClient(dataplatformv1alpha1.DefaultOIDCTrinoClientID, "Trino", trinoSecret),
-			confidentialClient(dataplatformv1alpha1.DefaultOIDCOperatorClient, "Data Platform Operator", operatorSecret),
+			confidentialClient(dataplatformv1alpha1.DefaultOIDCTrinoClientID, "Trino", trinoSecret, trinoRedirects),
+			confidentialClient(dataplatformv1alpha1.DefaultOIDCOperatorClient, "Data Platform Operator", operatorSecret, nil),
 		},
 		"users": []map[string]any{
 			{
@@ -404,8 +399,8 @@ func keycloakRealmJSON(spec dataplatformv1alpha1.KeycloakSpec, adminPass, trinoS
 	return string(raw), nil
 }
 
-func confidentialClient(id, name, secret string) map[string]any {
-	return map[string]any{
+func confidentialClient(id, name, secret string, redirectURIs []string) map[string]any {
+	client := map[string]any{
 		"clientId":                  id,
 		"name":                      name,
 		"enabled":                   true,
@@ -415,7 +410,119 @@ func confidentialClient(id, name, secret string) map[string]any {
 		"serviceAccountsEnabled":    true,
 		"standardFlowEnabled":       false,
 		"directAccessGrantsEnabled": false,
-		"defaultClientScopes":       []string{"openid", "profile", "email", dataplatformv1alpha1.DefaultOIDCScope},
+		"defaultClientScopes":       defaultOIDCClientScopes(),
 		"optionalClientScopes":      []string{},
+	}
+	if len(redirectURIs) > 0 {
+		client["standardFlowEnabled"] = true
+		client["redirectUris"] = redirectURIs
+		client["webOrigins"] = []string{"+"}
+		client["protocolMappers"] = []map[string]any{{
+			"name":           "username",
+			"protocol":       "openid-connect",
+			"protocolMapper": "oidc-usermodel-property-mapper",
+			"config": map[string]string{
+				"user.attribute":       "username",
+				"claim.name":           "preferred_username",
+				"jsonType.label":       "String",
+				"id.token.claim":       "true",
+				"access.token.claim":   "true",
+				"userinfo.token.claim": "true",
+			},
+		}}
+	}
+	return client
+}
+
+func defaultOIDCClientScopes() []string {
+	return []string{"basic", "profile", "email", dataplatformv1alpha1.DefaultOIDCScope}
+}
+
+func oidcClientScopes() []map[string]any {
+	return []map[string]any{
+		{
+			"name":        "basic",
+			"description": "OpenID Connect scope for add all basic claims to the token",
+			"protocol":    "openid-connect",
+			"attributes": map[string]string{
+				"include.in.token.scope":    "false",
+				"display.on.consent.screen": "false",
+			},
+			"protocolMappers": []map[string]any{
+				{
+					"name":           "sub",
+					"protocol":       "openid-connect",
+					"protocolMapper": "oidc-sub-mapper",
+					"config": map[string]string{
+						"access.token.claim":        "true",
+						"introspection.token.claim": "true",
+					},
+				},
+			},
+		},
+		{
+			"name":        "profile",
+			"description": "OpenID Connect built-in scope: profile",
+			"protocol":    "openid-connect",
+			"attributes": map[string]string{
+				"include.in.token.scope":    "true",
+				"display.on.consent.screen": "false",
+			},
+			"protocolMappers": []map[string]any{
+				userPropertyMapper("username", "preferred_username"),
+				userPropertyMapper("firstName", "given_name"),
+				userPropertyMapper("lastName", "family_name"),
+			},
+		},
+		{
+			"name":        "email",
+			"description": "OpenID Connect built-in scope: email",
+			"protocol":    "openid-connect",
+			"attributes": map[string]string{
+				"include.in.token.scope":    "true",
+				"display.on.consent.screen": "false",
+			},
+			"protocolMappers": []map[string]any{
+				userPropertyMapper("email", "email"),
+			},
+		},
+		{
+			"name":        dataplatformv1alpha1.DefaultOIDCScope,
+			"description": "Audience for LakeKeeper",
+			"protocol":    "openid-connect",
+			"attributes": map[string]string{
+				"include.in.token.scope":    "true",
+				"display.on.consent.screen": "false",
+			},
+			"protocolMappers": []map[string]any{
+				{
+					"name":           "audience-lakekeeper",
+					"protocol":       "openid-connect",
+					"protocolMapper": "oidc-audience-mapper",
+					"config": map[string]string{
+						"included.client.audience":  dataplatformv1alpha1.DefaultOIDCAudience,
+						"id.token.claim":            "false",
+						"access.token.claim":        "true",
+						"introspection.token.claim": "true",
+					},
+				},
+			},
+		},
+	}
+}
+
+func userPropertyMapper(property, claim string) map[string]any {
+	return map[string]any{
+		"name":           claim,
+		"protocol":       "openid-connect",
+		"protocolMapper": "oidc-usermodel-property-mapper",
+		"config": map[string]string{
+			"user.attribute":       property,
+			"claim.name":           claim,
+			"jsonType.label":       "String",
+			"id.token.claim":       "true",
+			"access.token.claim":   "true",
+			"userinfo.token.claim": "true",
+		},
 	}
 }

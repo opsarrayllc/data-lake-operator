@@ -89,7 +89,8 @@ type DataPlatformSpec struct {
 // By default the operator deploys Keycloak. Set embedded to false and fill oidc
 // to use an existing provider such as Okta or JumpCloud.
 type AuthSpec struct {
-	// enabled turns on OIDC for LakeKeeper and the Trino Iceberg catalog.
+	// enabled turns on OIDC for LakeKeeper, the Trino Iceberg catalog, and the
+	// Trino Web UI when spec.trino.publicURL is set.
 	// Defaults to true.
 	// +optional
 	Enabled *bool `json:"enabled,omitempty"`
@@ -436,6 +437,11 @@ type TrinoSpec struct {
 	// extraEnv is appended to Trino containers.
 	// +optional
 	ExtraEnv []corev1.EnvVar `json:"extraEnv,omitempty"`
+
+	// publicURL is the Trino URL browsers use (for example https://trino.example.com).
+	// When set and auth is enabled, the coordinator Web UI uses OIDC (OAuth2).
+	// +optional
+	PublicURL string `json:"publicURL,omitempty"`
 
 	// resources are compute resource requirements for worker pods.
 	// +optional

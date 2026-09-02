@@ -68,7 +68,8 @@ spec:
                     type: boolean
                   enabled:
                     description: |-
-                      enabled turns on OIDC for LakeKeeper and the Trino Iceberg catalog.
+                      enabled turns on OIDC for LakeKeeper, the Trino Iceberg catalog, and the
+                      Trino Web UI when spec.trino.publicURL is set.
                       Defaults to true.
                     type: boolean
                   keycloak:
@@ -928,6 +929,11 @@ spec:
                     description: |-
                       namespace is the Kubernetes namespace for Trino.
                       Defaults to "trino". Use a unique value if you create multiple DataPlatforms.
+                    type: string
+                  publicURL:
+                    description: |-
+                      publicURL is the Trino URL browsers use (for example https://trino.example.com).
+                      When set and auth is enabled, the coordinator Web UI uses OIDC (OAuth2).
                     type: string
                   resources:
                     description: resources are compute resource requirements for worker

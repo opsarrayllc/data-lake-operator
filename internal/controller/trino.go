@@ -43,8 +43,13 @@ func (r *DataPlatformReconciler) reconcileTrino(ctx context.Context, dp *datapla
 
 	catalogData, catalogHash := r.trinoCatalogData(ctx, dp, store, oidc)
 
-	coordCfg := trinoConfigProperties(true, dp.Spec.Trino.WorkersOrDefault() == 0, ns, dp.Spec.Trino.ExtraConfig)
-	workerCfg := trinoConfigProperties(false, false, ns, dp.Spec.Trino.ExtraConfig)
+	sharedSecret, err := r.trinoSharedSecret(ctx, dp, ns, oidc)
+	if err != nil {
+		setCondition(dp, dataplatformv1alpha1.ConditionTrinoReady, metav1.ConditionFalse, reasonError, err.Error())
+		return err
+	}
+	coordCfg := trinoConfigProperties(true, dp.Spec.Trino.WorkersOrDefault() == 0, ns, dp.Spec.Trino.ExtraConfig, oidc, dp.Spec.Trino.PublicURL, sharedSecret)
+	workerCfg := trinoConfigProperties(false, false, ns, dp.Spec.Trino.ExtraConfig, oidcConfig{}, "", sharedSecret)
 	cfgHash := hashData(coordCfg, workerCfg, catalogHash)
 
 	if err := r.applyTrinoConfigMap(ctx, dp, ns, coordCfg, workerCfg); err != nil {
@@ -59,7 +64,7 @@ func (r *DataPlatformReconciler) reconcileTrino(ctx context.Context, dp *datapla
 		setCondition(dp, dataplatformv1alpha1.ConditionTrinoReady, metav1.ConditionFalse, reasonError, err.Error())
 		return err
 	}
-	if err := r.applyTrinoCoordinator(ctx, dp, ns, cfgHash); err != nil {
+	if err := r.applyTrinoCoordinator(ctx, dp, ns, cfgHash, trinoUIAuthEnabled(oidc, dp.Spec.Trino.PublicURL)); err != nil {
 		setCondition(dp, dataplatformv1alpha1.ConditionTrinoReady, metav1.ConditionFalse, reasonError, err.Error())
 		return err
 	}
@@ -81,16 +86,74 @@ func (r *DataPlatformReconciler) reconcileTrino(ctx context.Context, dp *datapla
 	return nil
 }
 
-func trinoConfigProperties(coordinator, includeCoordinator bool, ns string, extra map[string]string) string {
+func trinoConfigProperties(coordinator, includeCoordinator bool, ns string, extra map[string]string, oidc oidcConfig, publicURL, sharedSecret string) string {
+	discovery := clusterServiceURL(nameTrino, ns, trinoPort)
+	if coordinator {
+		// Announce to the local process. Using the Service DNS sends the
+		// internal JWT to whatever pod currently backs the Service, which
+		// fails with a signature mismatch during a coordinator rollout.
+		discovery = fmt.Sprintf("http://127.0.0.1:%d", trinoPort)
+	}
 	props := map[string]string{
 		"coordinator":                        fmt.Sprintf("%t", coordinator),
 		"http-server.http.port":              fmt.Sprintf("%d", trinoPort),
 		"http-server.process-forwarded":      "true",
-		"discovery.uri":                      clusterServiceURL(nameTrino, ns, trinoPort),
+		"discovery.uri":                      discovery,
 		"node-scheduler.include-coordinator": fmt.Sprintf("%t", includeCoordinator),
+	}
+	if coordinator && trinoUIAuthEnabled(oidc, publicURL) {
+		maps.Copy(props, trinoOAuthProperties(oidc))
+	}
+	if sharedSecret != "" {
+		props["internal-communication.shared-secret"] = sharedSecret
 	}
 	maps.Copy(props, extra)
 	return renderProperties(props)
+}
+
+func trinoUIAuthEnabled(oidc oidcConfig, publicURL string) bool {
+	return oidc.enabled && strings.TrimRight(publicURL, "/") != ""
+}
+
+func trinoOAuthProperties(oidc oidcConfig) map[string]string {
+	issuer := oidc.issuer
+	if oidc.publicIssuer != "" {
+		issuer = oidc.publicIssuer
+	}
+	props := map[string]string{
+		"http-server.authentication.type":                        "oauth2",
+		"web-ui.authentication.type":                             "oauth2",
+		"http-server.authentication.allow-insecure-over-http":    "true",
+		"http-server.authentication.oauth2.issuer":               issuer,
+		"http-server.authentication.oauth2.client-id":            oidc.trinoClientID,
+		"http-server.authentication.oauth2.client-secret":        oidc.trinoSecret,
+		"http-server.authentication.oauth2.scopes":               "openid",
+		"http-server.authentication.oauth2.principal-field":      "preferred_username",
+		"http-server.authentication.oauth2.additional-audiences": oidc.audience,
+	}
+	if oidc.proxyService != "" && oidc.publicIssuer != "" && oidc.publicIssuer != oidc.issuer {
+		props["http-server.authentication.oauth2.oidc.discovery"] = "false"
+		props["http-server.authentication.oauth2.auth-url"] = oidcAuthURL(oidc.publicIssuer)
+		props["http-server.authentication.oauth2.token-url"] = oidc.tokenURL
+		props["http-server.authentication.oauth2.jwks-url"] = oidcJWKSURL(oidc.issuer)
+	}
+	return props
+}
+
+func (r *DataPlatformReconciler) trinoSharedSecret(ctx context.Context, dp *dataplatformv1alpha1.DataPlatform, ns string, oidc oidcConfig) (string, error) {
+	if !trinoUIAuthEnabled(oidc, dp.Spec.Trino.PublicURL) {
+		return "", nil
+	}
+	secret, err := randomHex(32)
+	if err != nil {
+		return "", err
+	}
+	if err := r.ensureGeneratedSecret(ctx, dp, secretTrinoInternal, ns, componentTrinoCoordinator, map[string][]byte{
+		keyTrinoSharedSecret: []byte(secret),
+	}); err != nil {
+		return "", err
+	}
+	return r.getSecretData(ctx, secretTrinoInternal, ns, keyTrinoSharedSecret)
 }
 
 func renderProperties(props map[string]string) string {
@@ -174,15 +237,18 @@ func (r *DataPlatformReconciler) applyTrinoConfigMap(
 	dp *dataplatformv1alpha1.DataPlatform,
 	ns, coordCfg, workerCfg string,
 ) error {
-	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: configMapTrino, Namespace: ns}}
+	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: secretTrinoConfig, Namespace: ns}}
+	_ = client.IgnoreNotFound(r.Delete(ctx, cm))
+
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: secretTrinoConfig, Namespace: ns}}
 	labels := labelsFor(dp, componentTrinoCoordinator)
-	return r.apply(ctx, dp, cm, func() error {
-		ensureLabels(cm, labels)
-		if cm.Data == nil {
-			cm.Data = map[string]string{}
+	return r.apply(ctx, dp, secret, func() error {
+		ensureLabels(secret, labels)
+		secret.Type = corev1.SecretTypeOpaque
+		secret.Data = map[string][]byte{
+			"config.properties.coordinator": []byte(coordCfg),
+			"config.properties.worker":      []byte(workerCfg),
 		}
-		cm.Data["config.properties.coordinator"] = coordCfg
-		cm.Data["config.properties.worker"] = workerCfg
 		return nil
 	})
 }
@@ -227,6 +293,7 @@ func (r *DataPlatformReconciler) applyTrinoCoordinator(
 	ctx context.Context,
 	dp *dataplatformv1alpha1.DataPlatform,
 	ns, cfgHash string,
+	oauth bool,
 ) error {
 	deploy := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: nameTrino, Namespace: ns}}
 	labels := labelsFor(dp, componentTrinoCoordinator)
@@ -246,6 +313,7 @@ func (r *DataPlatformReconciler) applyTrinoCoordinator(
 			"config.properties.coordinator",
 			dp.Spec.Trino.Coordinator.Resources,
 			dp.Spec.Trino.ExtraEnv,
+			oauth,
 		)
 		return nil
 	})
@@ -288,12 +356,24 @@ func (r *DataPlatformReconciler) reconcileTrinoWorkers(
 			"config.properties.worker",
 			dp.Spec.Trino.Resources,
 			dp.Spec.Trino.ExtraEnv,
+			false,
 		)
 		return nil
 	})
 }
 
-func trinoPodSpec(image, configKey string, resources corev1.ResourceRequirements, env []corev1.EnvVar) corev1.PodSpec {
+func trinoPodSpec(image, configKey string, resources corev1.ResourceRequirements, env []corev1.EnvVar, oauth bool) corev1.PodSpec {
+	probe := corev1.ProbeHandler{
+		HTTPGet: &corev1.HTTPGetAction{
+			Path: "/v1/info",
+			Port: intstr.FromInt32(trinoPort),
+		},
+	}
+	if oauth {
+		probe = corev1.ProbeHandler{
+			TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(trinoPort)},
+		}
+	}
 	return corev1.PodSpec{
 		SecurityContext: restrictedPodSecurity(uidTrino, gidTrino),
 		Containers: []corev1.Container{{
@@ -306,12 +386,7 @@ func trinoPodSpec(image, configKey string, resources corev1.ResourceRequirements
 				{Name: "catalog", MountPath: "/etc/trino/catalog"},
 			},
 			ReadinessProbe: &corev1.Probe{
-				ProbeHandler: corev1.ProbeHandler{
-					HTTPGet: &corev1.HTTPGetAction{
-						Path: "/v1/info",
-						Port: intstr.FromInt32(trinoPort),
-					},
-				},
+				ProbeHandler:  probe,
 				PeriodSeconds: 10,
 			},
 			Resources:       resources,
@@ -321,9 +396,7 @@ func trinoPodSpec(image, configKey string, resources corev1.ResourceRequirements
 			{
 				Name: volumeConfig,
 				VolumeSource: corev1.VolumeSource{
-					ConfigMap: &corev1.ConfigMapVolumeSource{
-						LocalObjectReference: corev1.LocalObjectReference{Name: configMapTrino},
-					},
+					Secret: &corev1.SecretVolumeSource{SecretName: secretTrinoConfig},
 				},
 			},
 			{

@@ -117,6 +117,10 @@ var _ = Describe("DataPlatform Controller", func() {
 		Expect(envValue(deploy.Spec.Template.Spec.Containers[0].Env, "KC_PROXY_HEADERS")).To(Equal("xforwarded"))
 		Expect(envValue(deploy.Spec.Template.Spec.Containers[0].Env, "KC_HOSTNAME_BACKCHANNEL_DYNAMIC")).To(BeEmpty())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: secretOIDC, Namespace: nameKeycloak}, &corev1.Secret{})).To(Succeed())
+		realmCM := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: configMapKeycloakRealm, Namespace: nameKeycloak}, realmCM)).To(Succeed())
+		Expect(realmCM.Data[keyRealmJSON]).To(ContainSubstring("oidc-sub-mapper"))
+		Expect(realmCM.Data[keyRealmJSON]).To(ContainSubstring(`"name":"basic"`))
 
 		By("creating the LakeKeeper namespace workloads")
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: namePostgres, Namespace: nameLakekeeper}, sts)).To(Succeed())
@@ -137,6 +141,7 @@ var _ = Describe("DataPlatform Controller", func() {
 		Expect(deploy.Spec.Template.Spec.InitContainers[1].SecurityContext.RunAsUser).To(Equal(ptr.To(uidLakekeeper)))
 		Expect(deploy.Spec.Template.Spec.Containers[0].SecurityContext.RunAsUser).To(Equal(ptr.To(uidLakekeeper)))
 		Expect(envValue(deploy.Spec.Template.Spec.Containers[0].Env, "LAKEKEEPER__OPENID_PROVIDER_URI")).To(ContainSubstring("/realms/dataplatform"))
+		Expect(envValue(deploy.Spec.Template.Spec.Containers[0].Env, "LAKEKEEPER__UI__OPENID_SCOPE")).To(Equal("openid lakekeeper"))
 		Expect(envValue(deploy.Spec.Template.Spec.Containers[0].Env, "LAKEKEEPER__BASE_URI")).To(BeEmpty())
 		Expect(envValue(deploy.Spec.Template.Spec.Containers[0].Env, "LAKEKEEPER__UI__LAKEKEEPER_URL")).To(BeEmpty())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameLakekeeper, Namespace: nameLakekeeper}, svc)).To(Succeed())
@@ -145,9 +150,12 @@ var _ = Describe("DataPlatform Controller", func() {
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameTrino, Namespace: nameTrino}, deploy)).To(Succeed())
 		Expect(deploy.Spec.Template.Spec.Containers[0].SecurityContext.RunAsUser).To(Equal(ptr.To(uidTrino)))
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameTrino, Namespace: nameTrino}, svc)).To(Succeed())
-		cfg := &corev1.ConfigMap{}
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: configMapTrino, Namespace: nameTrino}, cfg)).To(Succeed())
-		Expect(cfg.Data["config.properties.coordinator"]).To(ContainSubstring("http-server.process-forwarded=true"))
+		cfg := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: secretTrinoConfig, Namespace: nameTrino}, cfg)).To(Succeed())
+		Expect(string(cfg.Data["config.properties.coordinator"])).To(ContainSubstring("http-server.process-forwarded=true"))
+		Expect(string(cfg.Data["config.properties.coordinator"])).To(ContainSubstring("discovery.uri=http://127.0.0.1:8080"))
+		Expect(string(cfg.Data["config.properties.coordinator"])).NotTo(ContainSubstring("http-server.authentication.type=oauth2"))
+		Expect(string(cfg.Data["config.properties.worker"])).To(ContainSubstring("discovery.uri=http://trino.trino.svc:8080"))
 		catalogSecret := &corev1.Secret{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: secretTrinoCatalog, Namespace: nameTrino}, catalogSecret)).To(Succeed())
 		props := string(catalogSecret.Data[nameLakekeeper+".properties"])
@@ -231,6 +239,35 @@ var _ = Describe("DataPlatform Controller", func() {
 		env := deploy.Spec.Template.Spec.Containers[0].Env
 		Expect(envValue(env, "LAKEKEEPER__UI__LAKEKEEPER_URL")).To(Equal("https://lakekeeper.data-platform.local"))
 		Expect(envValue(env, "LAKEKEEPER__BASE_URI")).To(BeEmpty())
+	})
+
+	It("enables Trino Web UI OAuth2 when publicURL is set", func() {
+		resource := &dataplatformv1alpha1.DataPlatform{}
+		Expect(k8sClient.Get(ctx, typeNamespacedName, resource)).To(Succeed())
+		resource.Spec.Auth.Keycloak.PublicURL = "https://keycloak.data-platform.local"
+		resource.Spec.Trino.PublicURL = "https://trino.data-platform.local"
+		Expect(k8sClient.Update(ctx, resource)).To(Succeed())
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+		Expect(err).NotTo(HaveOccurred())
+		markDeploymentReady(ctx, nameKeycloak, nameKeycloak)
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+		Expect(err).NotTo(HaveOccurred())
+
+		cfg := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: secretTrinoConfig, Namespace: nameTrino}, cfg)).To(Succeed())
+		coord := string(cfg.Data["config.properties.coordinator"])
+		Expect(coord).To(ContainSubstring("http-server.authentication.type=oauth2"))
+		Expect(coord).To(ContainSubstring("web-ui.authentication.type=oauth2"))
+		Expect(coord).To(ContainSubstring("http-server.authentication.oauth2.issuer=https://keycloak.data-platform.local/realms/dataplatform"))
+		Expect(coord).To(ContainSubstring("http-server.authentication.oauth2.auth-url=https://keycloak.data-platform.local/realms/dataplatform/protocol/openid-connect/auth"))
+		Expect(coord).To(ContainSubstring("http-server.authentication.oauth2.token-url=http://keycloak.keycloak.svc:8080/realms/dataplatform/protocol/openid-connect/token"))
+		Expect(coord).To(ContainSubstring("internal-communication.shared-secret="))
+		Expect(string(cfg.Data["config.properties.worker"])).NotTo(ContainSubstring("http-server.authentication.type=oauth2"))
+
+		deploy := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameTrino, Namespace: nameTrino}, deploy)).To(Succeed())
+		Expect(deploy.Spec.Template.Spec.Containers[0].ReadinessProbe.TCPSocket).NotTo(BeNil())
 	})
 
 	It("uses an external S3 store when embedded is false", func() {

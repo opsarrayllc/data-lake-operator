@@ -65,6 +65,7 @@ spec:
   trino:
     enabled: true
     # image: trinodb/trino:476
+    # publicURL: https://trino.example.com
     workers: 0
     # extraConfig:
     #   query.max-memory: 1GB
