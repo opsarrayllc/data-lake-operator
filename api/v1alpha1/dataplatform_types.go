@@ -61,6 +61,7 @@ type DataPlatformStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:scope=Cluster
 
 // DataPlatform is the Schema for the dataplatforms API
 type DataPlatform struct {

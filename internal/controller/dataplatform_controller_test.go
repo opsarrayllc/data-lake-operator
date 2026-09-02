@@ -32,16 +32,12 @@ import (
 
 var _ = Describe("DataPlatform Controller", func() {
 	Context("When reconciling a resource", func() {
-		const (
-			resourceName      = "test-resource"
-			resourceNamespace = "default"
-		)
+		const resourceName = "test-resource"
 
 		ctx := context.Background()
 
 		typeNamespacedName := types.NamespacedName{
-			Name:      resourceName,
-			Namespace: resourceNamespace,
+			Name: resourceName,
 		}
 		dataplatform := &dataplatformv1alpha1.DataPlatform{}
 
@@ -51,8 +47,7 @@ var _ = Describe("DataPlatform Controller", func() {
 			if err != nil && errors.IsNotFound(err) {
 				resource := &dataplatformv1alpha1.DataPlatform{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      resourceName,
-						Namespace: resourceNamespace,
+						Name: resourceName,
 					},
 					// TODO(user): Specify other spec details if needed.
 				}

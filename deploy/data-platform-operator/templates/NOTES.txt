@@ -18,11 +18,10 @@ Create a DataPlatform to see it reconcile:
   kind: DataPlatform
   metadata:
     name: example
-    namespace: {{ .Release.Namespace }}
   spec: {}
   EOF
 
-  kubectl get dataplatforms -n {{ .Release.Namespace }}
+  kubectl get dataplatforms
 {{- else }}
 CRD installation is disabled (crds.enabled=false). Install the DataPlatform CRD
 separately before creating any DataPlatform resources.

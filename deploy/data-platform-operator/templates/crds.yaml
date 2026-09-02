@@ -17,7 +17,7 @@ spec:
     listKind: DataPlatformList
     plural: dataplatforms
     singular: dataplatform
-  scope: Namespaced
+  scope: Cluster
   versions:
   - name: v1alpha1
     schema:
