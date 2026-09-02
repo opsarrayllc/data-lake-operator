@@ -1,5 +1,5 @@
 apiVersion: v2
-name: data-lake-operator
+name: data-platform-operator
 description: Kubernetes operator that deploys the resources needed to bootstrap a data lake
 type: application
 
@@ -10,9 +10,9 @@ version: 0.1.0
 # overwrites this with the tag being released, and it is the default image tag.
 appVersion: "0.1.0"
 
-home: https://github.com/opsarrayllc/data-lake-operator
+home: https://github.com/opsarrayllc/data-platform-operator
 sources:
-  - https://github.com/opsarrayllc/data-lake-operator
+  - https://github.com/opsarrayllc/data-platform-operator
 keywords:
   - operator
   - data-lake

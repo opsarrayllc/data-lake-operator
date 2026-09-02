@@ -2,16 +2,16 @@
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: {{ include "data-lake-operator.fullname" . }}
+  name: {{ include "data-platform-operator.fullname" . }}
   labels:
-    {{- include "data-lake-operator.labels" . | nindent 4 }}
+    {{- include "data-platform-operator.labels" . | nindent 4 }}
     {{- with .Values.metrics.serviceMonitor.labels }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
 spec:
   selector:
     matchLabels:
-      {{- include "data-lake-operator.selectorLabels" . | nindent 6 }}
+      {{- include "data-platform-operator.selectorLabels" . | nindent 6 }}
       control-plane: controller-manager
   namespaceSelector:
     matchNames:

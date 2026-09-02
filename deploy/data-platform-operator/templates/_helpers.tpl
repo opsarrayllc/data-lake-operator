@@ -1,7 +1,7 @@
 {{/*
 Expand the name of the chart.
 */}}
-{{- define "data-lake-operator.name" -}}
+{{- define "data-platform-operator.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
@@ -10,7 +10,7 @@ Create a default fully qualified app name.
 We truncate at 63 chars because some Kubernetes name fields are limited to this (by the DNS naming spec).
 If release name contains chart name it will be used as a full name.
 */}}
-{{- define "data-lake-operator.fullname" -}}
+{{- define "data-platform-operator.fullname" -}}
 {{- if .Values.fullnameOverride }}
 {{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" }}
 {{- else }}
@@ -26,16 +26,16 @@ If release name contains chart name it will be used as a full name.
 {{/*
 Create chart name and version as used by the chart label.
 */}}
-{{- define "data-lake-operator.chart" -}}
+{{- define "data-platform-operator.chart" -}}
 {{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
 Common labels
 */}}
-{{- define "data-lake-operator.labels" -}}
-helm.sh/chart: {{ include "data-lake-operator.chart" . }}
-{{ include "data-lake-operator.selectorLabels" . }}
+{{- define "data-platform-operator.labels" -}}
+helm.sh/chart: {{ include "data-platform-operator.chart" . }}
+{{ include "data-platform-operator.selectorLabels" . }}
 {{- if .Chart.AppVersion }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
@@ -45,15 +45,15 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{/*
 Selector labels
 */}}
-{{- define "data-lake-operator.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "data-lake-operator.name" . }}
+{{- define "data-platform-operator.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "data-platform-operator.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
 Fully qualified manager image reference, defaulting the tag to the chart appVersion.
 */}}
-{{- define "data-lake-operator.image" -}}
+{{- define "data-platform-operator.image" -}}
 {{- $tag := default .Chart.AppVersion .Values.image.tag -}}
 {{- printf "%s:%s" .Values.image.repository $tag -}}
 {{- end }}
@@ -61,9 +61,9 @@ Fully qualified manager image reference, defaulting the tag to the chart appVers
 {{/*
 Create the name of the service account to use
 */}}
-{{- define "data-lake-operator.serviceAccountName" -}}
+{{- define "data-platform-operator.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create }}
-{{- default (include "data-lake-operator.fullname" .) .Values.serviceAccount.name }}
+{{- default (include "data-platform-operator.fullname" .) .Values.serviceAccount.name }}
 {{- else }}
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}

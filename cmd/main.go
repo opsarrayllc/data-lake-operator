@@ -35,7 +35,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	datalakev1alpha1 "github.com/opsarrayllc/data-lake-operator/api/v1alpha1"
+	dataplatformv1alpha1 "github.com/opsarrayllc/data-lake-operator/api/v1alpha1"
 	"github.com/opsarrayllc/data-lake-operator/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
@@ -48,7 +48,7 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
-	utilruntime.Must(datalakev1alpha1.AddToScheme(scheme))
+	utilruntime.Must(dataplatformv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -178,11 +178,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := (&controller.DataLakeReconciler{
+	if err := (&controller.DataPlatformReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "datalake")
+		setupLog.Error(err, "Failed to create controller", "controller", "dataplatform")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

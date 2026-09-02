@@ -27,10 +27,10 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	datalakev1alpha1 "github.com/opsarrayllc/data-lake-operator/api/v1alpha1"
+	dataplatformv1alpha1 "github.com/opsarrayllc/data-lake-operator/api/v1alpha1"
 )
 
-var _ = Describe("DataLake Controller", func() {
+var _ = Describe("DataPlatform Controller", func() {
 	Context("When reconciling a resource", func() {
 		const (
 			resourceName      = "test-resource"
@@ -43,13 +43,13 @@ var _ = Describe("DataLake Controller", func() {
 			Name:      resourceName,
 			Namespace: resourceNamespace,
 		}
-		datalake := &datalakev1alpha1.DataLake{}
+		dataplatform := &dataplatformv1alpha1.DataPlatform{}
 
 		BeforeEach(func() {
-			By("creating the custom resource for the Kind DataLake")
-			err := k8sClient.Get(ctx, typeNamespacedName, datalake)
+			By("creating the custom resource for the Kind DataPlatform")
+			err := k8sClient.Get(ctx, typeNamespacedName, dataplatform)
 			if err != nil && errors.IsNotFound(err) {
-				resource := &datalakev1alpha1.DataLake{
+				resource := &dataplatformv1alpha1.DataPlatform{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: resourceNamespace,
@@ -62,16 +62,16 @@ var _ = Describe("DataLake Controller", func() {
 
 		AfterEach(func() {
 			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &datalakev1alpha1.DataLake{}
+			resource := &dataplatformv1alpha1.DataPlatform{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Cleanup the specific resource instance DataLake")
+			By("Cleanup the specific resource instance DataPlatform")
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 		})
 		It("should successfully reconcile the resource", func() {
 			By("Reconciling the created resource")
-			controllerReconciler := &DataLakeReconciler{
+			controllerReconciler := &DataPlatformReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}

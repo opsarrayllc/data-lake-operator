@@ -1,11 +1,11 @@
-# Default values for data-lake-operator.
+# Default values for data-platform-operator.
 
 # The operator uses leader election, so extra replicas are warm standbys rather
 # than additional reconcile throughput. Only one is active at a time.
 replicaCount: 1
 
 image:
-  repository: ghcr.io/opsarrayllc/data-lake-operator
+  repository: ghcr.io/opsarrayllc/data-platform-operator
   pullPolicy: IfNotPresent
   # Defaults to the chart appVersion when empty.
   tag: ""
@@ -15,11 +15,11 @@ nameOverride: ""
 fullnameOverride: ""
 
 crds:
-  # Install the DataLake CustomResourceDefinition as part of the release.
+  # Install the DataPlatform CustomResourceDefinition as part of the release.
   # Disable this if you manage CRDs out of band (e.g. via kustomize or ArgoCD).
   enabled: true
   # Keep the CRD when the release is uninstalled. Deleting a CRD deletes every
-  # DataLake in the cluster, so this defaults to keeping it.
+  # DataPlatform in the cluster, so this defaults to keeping it.
   keep: true
 
 serviceAccount:
@@ -31,7 +31,7 @@ serviceAccount:
 
 rbac:
   # Create the ClusterRole/ClusterRoleBinding the manager needs to reconcile
-  # DataLake resources, plus the namespaced Role used for leader election.
+  # DataPlatform resources, plus the namespaced Role used for leader election.
   create: true
 
 leaderElection:

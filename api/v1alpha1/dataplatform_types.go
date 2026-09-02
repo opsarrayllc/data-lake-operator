@@ -24,27 +24,27 @@ import (
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
-// DataLakeSpec defines the desired state of DataLake
-type DataLakeSpec struct {
+// DataPlatformSpec defines the desired state of DataPlatform
+type DataPlatformSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 	// The following markers will use OpenAPI v3 schema to validate the value
 	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
 
-	// foo is an example field of DataLake. Edit datalake_types.go to remove/update
+	// foo is an example field of DataPlatform. Edit dataplatform_types.go to remove/update
 	// +optional
 	Foo *string `json:"foo,omitempty"`
 }
 
-// DataLakeStatus defines the observed state of DataLake.
-type DataLakeStatus struct {
+// DataPlatformStatus defines the observed state of DataPlatform.
+type DataPlatformStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
 	// For Kubernetes API conventions, see:
 	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
 
-	// conditions represent the current state of the DataLake resource.
+	// conditions represent the current state of the DataPlatform resource.
 	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
 	//
 	// Standard condition types include:
@@ -62,35 +62,35 @@ type DataLakeStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 
-// DataLake is the Schema for the datalakes API
-type DataLake struct {
+// DataPlatform is the Schema for the dataplatforms API
+type DataPlatform struct {
 	metav1.TypeMeta `json:",inline"`
 
 	// metadata is a standard object metadata
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitzero"`
 
-	// spec defines the desired state of DataLake
+	// spec defines the desired state of DataPlatform
 	// +required
-	Spec DataLakeSpec `json:"spec"`
+	Spec DataPlatformSpec `json:"spec"`
 
-	// status defines the observed state of DataLake
+	// status defines the observed state of DataPlatform
 	// +optional
-	Status DataLakeStatus `json:"status,omitzero"`
+	Status DataPlatformStatus `json:"status,omitzero"`
 }
 
 // +kubebuilder:object:root=true
 
-// DataLakeList contains a list of DataLake
-type DataLakeList struct {
+// DataPlatformList contains a list of DataPlatform
+type DataPlatformList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitzero"`
-	Items           []DataLake `json:"items"`
+	Items           []DataPlatform `json:"items"`
 }
 
 func init() {
 	SchemeBuilder.Register(func(s *runtime.Scheme) error {
-		s.AddKnownTypes(SchemeGroupVersion, &DataLake{}, &DataLakeList{})
+		s.AddKnownTypes(SchemeGroupVersion, &DataPlatform{}, &DataPlatformList{})
 		return nil
 	})
 }

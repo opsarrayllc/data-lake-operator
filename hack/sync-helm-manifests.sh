@@ -10,7 +10,7 @@
 # never upgrades or deletes anything in crds/, which would leave the cluster on
 # a stale schema after `helm upgrade`. Templating them costs the built-in
 # protection of crds/, so a resource-policy annotation is injected to keep the
-# CRD (and therefore every DataLake) on uninstall.
+# CRD (and therefore every DataPlatform) on uninstall.
 #
 # The manager ClusterRole rules come from the +kubebuilder:rbac markers, so the
 # chart includes them rather than duplicating them by hand. kustomize renders

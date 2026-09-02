@@ -1,36 +1,36 @@
 {{ .Chart.Name }} {{ .Chart.Version }} installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
 
-Manager image: {{ include "data-lake-operator.image" . }}
+Manager image: {{ include "data-platform-operator.image" . }}
 
 Watch the controller come up:
 
-  kubectl rollout status deployment/{{ include "data-lake-operator.fullname" . }} -n {{ .Release.Namespace }}
+  kubectl rollout status deployment/{{ include "data-platform-operator.fullname" . }} -n {{ .Release.Namespace }}
 
 Follow its logs:
 
-  kubectl logs -n {{ .Release.Namespace }} deployment/{{ include "data-lake-operator.fullname" . }} -c manager -f
+  kubectl logs -n {{ .Release.Namespace }} deployment/{{ include "data-platform-operator.fullname" . }} -c manager -f
 
 {{ if .Values.crds.enabled -}}
-Create a DataLake to see it reconcile:
+Create a DataPlatform to see it reconcile:
 
   kubectl apply -f - <<'EOF'
   apiVersion: dataplatform.opsarray.io/v1alpha1
-  kind: DataLake
+  kind: DataPlatform
   metadata:
     name: example
     namespace: {{ .Release.Namespace }}
   spec: {}
   EOF
 
-  kubectl get datalakes -n {{ .Release.Namespace }}
+  kubectl get dataplatforms -n {{ .Release.Namespace }}
 {{- else }}
-CRD installation is disabled (crds.enabled=false). Install the DataLake CRD
-separately before creating any DataLake resources.
+CRD installation is disabled (crds.enabled=false). Install the DataPlatform CRD
+separately before creating any DataPlatform resources.
 {{- end }}
 
 {{ if and .Values.metrics.enabled .Values.metrics.secure -}}
 Metrics are served over HTTPS on port {{ .Values.metrics.port }} and require a
-token authorized by the "{{ include "data-lake-operator.fullname" . }}-metrics-reader"
+token authorized by the "{{ include "data-platform-operator.fullname" . }}-metrics-reader"
 ClusterRole. Bind that role to your Prometheus service account to scrape them.
 {{- end }}
 {{- if .Values.metrics.serviceMonitor.enabled }}

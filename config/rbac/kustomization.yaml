@@ -22,7 +22,7 @@ resources:
 # default, aiding admins in cluster management. Those roles are
 # not used by the data-lake-operator itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
-- datalake_admin_role.yaml
-- datalake_editor_role.yaml
-- datalake_viewer_role.yaml
+- dataplatform_admin_role.yaml
+- dataplatform_editor_role.yaml
+- dataplatform_viewer_role.yaml
 

@@ -1,9 +1,9 @@
 apiVersion: dataplatform.opsarray.io/v1alpha1
-kind: DataLake
+kind: DataPlatform
 metadata:
   labels:
     app.kubernetes.io/name: data-lake-operator
     app.kubernetes.io/managed-by: kustomize
-  name: datalake-sample
+  name: dataplatform-sample
 spec:
   # TODO(user): Add fields here

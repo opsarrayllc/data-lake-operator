@@ -14,10 +14,10 @@ Built with [Kubebuilder](https://book.kubebuilder.io) v4 / controller-runtime.
 
 | Group | Version | Kind |
 | --- | --- | --- |
-| `dataplatform.opsarray.io` | `v1alpha1` | `DataLake` |
+| `dataplatform.opsarray.io` | `v1alpha1` | `DataPlatform` |
 
-The type lives in `api/v1alpha1/datalake_types.go` and its reconciler in
-`internal/controller/datalake_controller.go`.
+The type lives in `api/v1alpha1/dataplatform_types.go` and its reconciler in
+`internal/controller/dataplatform_controller.go`.
 
 ## Prerequisites
 
@@ -82,8 +82,8 @@ the full set of options. Notable ones:
 
 | Value | Default | Purpose |
 | --- | --- | --- |
-| `crds.enabled` | `true` | Install the `DataLake` CRD with the release |
-| `crds.keep` | `true` | Keep the CRD (and all `DataLake`s) on uninstall |
+| `crds.enabled` | `true` | Install the `DataPlatform` CRD with the release |
+| `crds.keep` | `true` | Keep the CRD (and all `DataPlatform`s) on uninstall |
 | `metrics.secure` | `true` | Serve metrics over HTTPS with authn/authz |
 | `metrics.serviceMonitor.enabled` | `false` | Create a Prometheus `ServiceMonitor` |
 | `replicaCount` | `1` | Extra replicas are standbys; leader election picks one |

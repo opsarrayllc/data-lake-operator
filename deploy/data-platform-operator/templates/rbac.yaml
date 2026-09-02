@@ -2,36 +2,36 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ include "data-lake-operator.fullname" . }}-manager
+  name: {{ include "data-platform-operator.fullname" . }}-manager
   labels:
-    {{- include "data-lake-operator.labels" . | nindent 4 }}
+    {{- include "data-platform-operator.labels" . | nindent 4 }}
 # Rules come from the +kubebuilder:rbac markers via 'make helm-sync'.
 rules:
-{{ include "data-lake-operator.managerRules" . }}
+{{ include "data-platform-operator.managerRules" . }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: {{ include "data-lake-operator.fullname" . }}-manager
+  name: {{ include "data-platform-operator.fullname" . }}-manager
   labels:
-    {{- include "data-lake-operator.labels" . | nindent 4 }}
+    {{- include "data-platform-operator.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: {{ include "data-lake-operator.fullname" . }}-manager
+  name: {{ include "data-platform-operator.fullname" . }}-manager
 subjects:
   - kind: ServiceAccount
-    name: {{ include "data-lake-operator.serviceAccountName" . }}
+    name: {{ include "data-platform-operator.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
 ---
 # Leader election coordinates the active replica within the release namespace.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: {{ include "data-lake-operator.fullname" . }}-leader-election
+  name: {{ include "data-platform-operator.fullname" . }}-leader-election
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "data-lake-operator.labels" . | nindent 4 }}
+    {{- include "data-platform-operator.labels" . | nindent 4 }}
 rules:
   - apiGroups:
       - ""
@@ -68,17 +68,17 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: {{ include "data-lake-operator.fullname" . }}-leader-election
+  name: {{ include "data-platform-operator.fullname" . }}-leader-election
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "data-lake-operator.labels" . | nindent 4 }}
+    {{- include "data-platform-operator.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: {{ include "data-lake-operator.fullname" . }}-leader-election
+  name: {{ include "data-platform-operator.fullname" . }}-leader-election
 subjects:
   - kind: ServiceAccount
-    name: {{ include "data-lake-operator.serviceAccountName" . }}
+    name: {{ include "data-platform-operator.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
 {{- if and .Values.metrics.enabled .Values.metrics.secure }}
 ---
@@ -87,9 +87,9 @@ subjects:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ include "data-lake-operator.fullname" . }}-metrics-auth
+  name: {{ include "data-platform-operator.fullname" . }}-metrics-auth
   labels:
-    {{- include "data-lake-operator.labels" . | nindent 4 }}
+    {{- include "data-platform-operator.labels" . | nindent 4 }}
 rules:
   - apiGroups:
       - authentication.k8s.io
@@ -107,16 +107,16 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: {{ include "data-lake-operator.fullname" . }}-metrics-auth
+  name: {{ include "data-platform-operator.fullname" . }}-metrics-auth
   labels:
-    {{- include "data-lake-operator.labels" . | nindent 4 }}
+    {{- include "data-platform-operator.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: {{ include "data-lake-operator.fullname" . }}-metrics-auth
+  name: {{ include "data-platform-operator.fullname" . }}-metrics-auth
 subjects:
   - kind: ServiceAccount
-    name: {{ include "data-lake-operator.serviceAccountName" . }}
+    name: {{ include "data-platform-operator.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
 ---
 # Grants the ability to scrape the metrics endpoint. Bind this to whichever
@@ -124,9 +124,9 @@ subjects:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ include "data-lake-operator.fullname" . }}-metrics-reader
+  name: {{ include "data-platform-operator.fullname" . }}-metrics-reader
   labels:
-    {{- include "data-lake-operator.labels" . | nindent 4 }}
+    {{- include "data-platform-operator.labels" . | nindent 4 }}
 rules:
   - nonResourceURLs:
       - /metrics

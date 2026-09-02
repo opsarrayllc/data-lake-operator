@@ -11,12 +11,12 @@ metadata:
   labels:
     app.kubernetes.io/name: data-lake-operator
     app.kubernetes.io/managed-by: kustomize
-  name: datalake-viewer-role
+  name: dataplatform-viewer-role
 rules:
 - apiGroups:
   - dataplatform.opsarray.io
   resources:
-  - datalakes
+  - dataplatforms
   verbs:
   - get
   - list
@@ -24,6 +24,6 @@ rules:
 - apiGroups:
   - dataplatform.opsarray.io
   resources:
-  - datalakes/status
+  - dataplatforms/status
   verbs:
   - get
