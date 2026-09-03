@@ -430,6 +430,65 @@ var _ = Describe("DataPlatform Controller", func() {
 		cfg := &corev1.Secret{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: secretTrinoConfig, Namespace: nameTrino}, cfg)).To(Succeed())
 		Expect(string(cfg.Data["access-control.properties"])).NotTo(ContainSubstring("row-filters-uri"))
+		Expect(string(cfg.Data["access-control.properties"])).NotTo(ContainSubstring("column-masking"))
+	})
+
+	It("wires column access through OpenFGA, OPA, and Trino", func() {
+		resource := &dataplatformv1alpha1.DataPlatform{}
+		Expect(k8sClient.Get(ctx, typeNamespacedName, resource)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+		Eventually(func() bool {
+			return errors.IsNotFound(k8sClient.Get(ctx, typeNamespacedName, resource))
+		}).Should(BeTrue())
+
+		restricted := &dataplatformv1alpha1.DataPlatform{
+			ObjectMeta: metav1.ObjectMeta{Name: resourceName},
+			Spec: dataplatformv1alpha1.DataPlatformSpec{
+				Authz: dataplatformv1alpha1.AuthzSpec{
+					ColumnAccess: []dataplatformv1alpha1.ColumnAccessSpec{{
+						Schema:  "sales",
+						Table:   "orders",
+						Column:  "ssn",
+						OpenFGA: dataplatformv1alpha1.ColumnAccessSubjectSpec{Type: "column"},
+					}},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, restricted)).To(Succeed())
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+		Expect(err).NotTo(HaveOccurred())
+		bringUpOpenFGA(ctx, reconciler, typeNamespacedName)
+
+		By("provisioning an OpenFGA store holding the column type")
+		Expect(catalog.authzStores).NotTo(BeEmpty())
+		Expect(catalog.authzStores[0].Types).To(Equal([]AuthzType{
+			{Name: "column", Relations: []string{dataplatformv1alpha1.DefaultRowFilterRelation}},
+		}))
+		Expect(k8sClient.Get(ctx, typeNamespacedName, resource)).To(Succeed())
+		Expect(resource.Status.RowFilterStoreID).To(Equal("01ABCDEF"))
+
+		By("giving OPA the store and the column restrictions")
+		deploy := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameOPA, Namespace: nameOpenFGA}, deploy)).To(Succeed())
+		env := deploy.Spec.Template.Spec.Containers[0].Env
+		Expect(envValue(env, "OPENFGA_STORE_ID")).To(Equal("01ABCDEF"))
+		Expect(envValue(env, "TRINO_COLUMN_ACCESS")).To(ContainSubstring(`"column":"ssn"`))
+		Expect(envValue(env, "TRINO_COLUMN_ACCESS")).To(ContainSubstring(`"object":"lakekeeper.sales.orders.ssn"`))
+		Expect(envValue(env, "TRINO_COLUMN_ACCESS")).To(ContainSubstring(`"mask":"NULL"`))
+		Expect(envValue(env, "TRINO_ROW_FILTERS")).To(BeEmpty())
+
+		By("shipping the column mask policy alongside the vendored bridge")
+		policies := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: configMapOPAPolicies, Namespace: nameOpenFGA}, policies)).To(Succeed())
+		Expect(policies.Data).To(HaveKey("trino-column_masks.rego"))
+
+		By("pointing Trino at the batch column mask endpoint")
+		cfg := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: secretTrinoConfig, Namespace: nameTrino}, cfg)).To(Succeed())
+		Expect(string(cfg.Data["access-control.properties"])).To(
+			ContainSubstring("opa.policy.batch-column-masking-uri=http://opa.openfga.svc:8181/v1/data/trino/batch_column_masks"))
+		Expect(string(cfg.Data["access-control.properties"])).NotTo(ContainSubstring("row-filters-uri"))
 	})
 
 	It("uses an external OIDC issuer when auth.embedded is false", func() {

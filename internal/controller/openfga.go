@@ -44,7 +44,7 @@ type openfgaConfig struct {
 	// endpoint is the gRPC one LakeKeeper speaks.
 	httpEndpoint string
 	// rowFilterStoreID is empty until OpenFGA is up and the store has been
-	// provisioned. Row filters deny every row until it is known.
+	// provisioned. Row filters and column masks fail closed until it is known.
 	rowFilterStoreID string
 }
 
@@ -122,7 +122,7 @@ func (r *DataPlatformReconciler) reconcileOpenFGA(ctx context.Context, dp *datap
 		return cfg, false, nil
 	}
 
-	storeID, err := r.reconcileRowFilterStore(ctx, dp, ns, apiKey)
+	storeID, err := r.reconcileAccessStore(ctx, dp, ns, apiKey)
 	if err != nil {
 		setCondition(dp, dataplatformv1alpha1.ConditionOpenFGAReady, metav1.ConditionFalse, reasonError, err.Error())
 		return cfg, false, err
@@ -133,15 +133,16 @@ func (r *DataPlatformReconciler) reconcileOpenFGA(ctx context.Context, dp *datap
 	return cfg, true, nil
 }
 
-// reconcileRowFilterStore provisions the OpenFGA store and authorization model
-// backing spec.authz.rowFilters, and returns its store id.
-func (r *DataPlatformReconciler) reconcileRowFilterStore(
+// reconcileAccessStore provisions the OpenFGA store and authorization model
+// backing spec.authz.rowFilters and spec.authz.columnAccess, and returns its
+// store id.
+func (r *DataPlatformReconciler) reconcileAccessStore(
 	ctx context.Context,
 	dp *dataplatformv1alpha1.DataPlatform,
 	ns, apiKey string,
 ) (string, error) {
 	log := logf.FromContext(ctx)
-	if !dp.Spec.Authz.HasRowFilters() || !dp.Spec.Trino.IsEnabled() {
+	if !dp.Spec.Authz.HasAccessPolicies() || !dp.Spec.Trino.IsEnabled() {
 		dp.Status.RowFilterStoreID = ""
 		return "", nil
 	}
@@ -150,29 +151,33 @@ func (r *DataPlatformReconciler) reconcileRowFilterStore(
 	}
 	req := AuthzStoreRequest{
 		Store: dp.Spec.Authz.OpenFGA.RowFilterStoreOrDefault(),
-		Types: rowFilterAuthzTypes(dp.Spec.Authz.RowFilters),
+		Types: accessAuthzTypes(dp.Spec.Authz),
 	}
 	storeID, err := r.Catalog.EnsureAuthzStore(ctx, ns, nameOpenFGA, openfgaHTTPPort, apiKey, req)
 	if err != nil {
 		return "", err
 	}
 	if storeID != dp.Status.RowFilterStoreID {
-		log.Info("Ensured OpenFGA row filter store", "store", req.Store, "id", storeID)
+		log.Info("Ensured OpenFGA access store", "store", req.Store, "id", storeID)
 	}
 	dp.Status.RowFilterStoreID = storeID
 	return storeID, nil
 }
 
-// rowFilterAuthzTypes collapses the configured filters into the OpenFGA object
-// types they need, merging the relations of filters that share a type.
-func rowFilterAuthzTypes(filters []dataplatformv1alpha1.RowFilterSpec) []AuthzType {
+// accessAuthzTypes collapses row filters and column restrictions into the
+// OpenFGA object types they need, merging relations that share a type.
+func accessAuthzTypes(spec dataplatformv1alpha1.AuthzSpec) []AuthzType {
 	relations := map[string][]string{}
-	for i := range filters {
-		name := filters[i].OpenFGA.Type
-		relation := filters[i].OpenFGA.RelationOrDefault()
+	add := func(name, relation string) {
 		if !slices.Contains(relations[name], relation) {
 			relations[name] = append(relations[name], relation)
 		}
+	}
+	for i := range spec.RowFilters {
+		add(spec.RowFilters[i].OpenFGA.Type, spec.RowFilters[i].OpenFGA.RelationOrDefault())
+	}
+	for i := range spec.ColumnAccess {
+		add(spec.ColumnAccess[i].OpenFGA.Type, spec.ColumnAccess[i].OpenFGA.RelationOrDefault())
 	}
 	types := make([]AuthzType, 0, len(relations))
 	for _, name := range slices.Sorted(maps.Keys(relations)) {

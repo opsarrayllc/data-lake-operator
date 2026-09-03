@@ -234,6 +234,17 @@ func (s *AuthzSpec) HasRowFilters() bool {
 	return s.IsEnabled() && len(s.RowFilters) > 0
 }
 
+// HasColumnAccess reports whether any column restriction is configured.
+func (s *AuthzSpec) HasColumnAccess() bool {
+	return s.IsEnabled() && len(s.ColumnAccess) > 0
+}
+
+// HasAccessPolicies reports whether OPA needs the dedicated OpenFGA store
+// for row filters or column access.
+func (s *AuthzSpec) HasAccessPolicies() bool {
+	return s.HasRowFilters() || s.HasColumnAccess()
+}
+
 // CatalogOrDefault returns the Trino catalog the filtered table lives in.
 func (s *RowFilterSpec) CatalogOrDefault() string {
 	return stringOrDefault(s.Catalog, DefaultTrinoCatalog)
@@ -247,6 +258,29 @@ func (s *RowFilterSpec) IsNumeric() bool {
 // RelationOrDefault returns the OpenFGA relation guarding a permitted value.
 func (s *RowFilterSubjectSpec) RelationOrDefault() string {
 	return stringOrDefault(s.Relation, DefaultRowFilterRelation)
+}
+
+// CatalogOrDefault returns the Trino catalog the restricted column lives in.
+func (s *ColumnAccessSpec) CatalogOrDefault() string {
+	return stringOrDefault(s.Catalog, DefaultTrinoCatalog)
+}
+
+// MaskOrDefault returns the SQL expression applied when the user has no grant.
+func (s *ColumnAccessSpec) MaskOrDefault() string {
+	return stringOrDefault(s.Mask, DefaultColumnMask)
+}
+
+// RelationOrDefault returns the OpenFGA relation that reveals the column.
+func (s *ColumnAccessSubjectSpec) RelationOrDefault() string {
+	return stringOrDefault(s.Relation, DefaultRowFilterRelation)
+}
+
+// ObjectOrDefault returns the OpenFGA object id for this column.
+func (s *ColumnAccessSpec) ObjectOrDefault() string {
+	if s.OpenFGA.Object != "" {
+		return s.OpenFGA.Object
+	}
+	return s.CatalogOrDefault() + "." + s.Schema + "." + s.Table + "." + s.Column
 }
 
 // AudienceOrDefault returns the expected JWT audience.

@@ -223,6 +223,85 @@ spec:
                   authz configures fine-grained authorization. By default the operator deploys
                   OpenFGA and an OPA bridge so Trino enforces LakeKeeper permissions.
                 properties:
+                  columnAccess:
+                    description: |-
+                      columnAccess restricts which columns each user sees in Trino. LakeKeeper
+                      grants access to whole tables; these entries hide a column's values
+                      unless the user holds the named relation on the column's OpenFGA object.
+
+                      The default object id is "{catalog}.{schema}.{table}.{column}", so
+                      "user:alice viewer column:lakekeeper.sales.orders.ssn" reveals ssn.
+                      Set openfga.object to share one grant across tables, for example "ssn".
+
+                      Users without a grant see the mask expression (NULL by default). The
+                      column still appears in the schema; its values do not. Fails closed:
+                      an unreachable OpenFGA masks every restricted column.
+                    items:
+                      description: ColumnAccessSpec hides one Trino column from users
+                        who lack an OpenFGA grant.
+                      properties:
+                        catalog:
+                          description: |-
+                            catalog is the Trino catalog holding the table. Defaults to "lakekeeper",
+                            the catalog the operator creates for the managed warehouse.
+                          type: string
+                        column:
+                          description: |-
+                            column is the column to hide. It must match the column's case as stored
+                            in the table, which Iceberg normally lowercases.
+                          pattern: ^[A-Za-z_][A-Za-z0-9_]*$
+                          type: string
+                        mask:
+                          description: |-
+                            mask is the SQL expression Trino substitutes for the column when the
+                            user has no grant. Defaults to NULL. This value is taken from the CR,
+                            not from OpenFGA, and is applied as a view expression.
+                          maxLength: 256
+                          type: string
+                        openfga:
+                          description: |-
+                            openfga names the object type and relation that grant an unmasked view
+                            of this column.
+                          properties:
+                            object:
+                              description: |-
+                                object is the OpenFGA object id. Defaults to
+                                "{catalog}.{schema}.{table}.{column}". Set this to a short name such as
+                                "ssn" to grant that column on every table that uses the same type.
+                              pattern: ^[a-zA-Z0-9._|-]+$
+                              type: string
+                            relation:
+                              description: |-
+                                relation is the relation a user must hold to see the column unmasked.
+                                Defaults to "viewer". Assignable to users and to group members.
+                              pattern: ^[a-zA-Z0-9_][a-zA-Z0-9_-]*$
+                              type: string
+                            type:
+                              description: |-
+                                type is the OpenFGA object type. Combined with object, this is the
+                                tuple target, for example "column:lakekeeper.sales.orders.ssn".
+                              pattern: ^[a-zA-Z0-9_][a-zA-Z0-9_-]*$
+                              type: string
+                          required:
+                          - type
+                          type: object
+                        schema:
+                          description: schema is the Trino schema, which is a LakeKeeper
+                            namespace.
+                          minLength: 1
+                          type: string
+                        table:
+                          description: table is the table holding the column.
+                          minLength: 1
+                          type: string
+                      required:
+                      - column
+                      - openfga
+                      - schema
+                      - table
+                      type: object
+                    type: array
+                    x-kubernetes-list-type: atomic
                   embedded:
                     description: embedded deploys OpenFGA in its own namespace. Defaults
                       to true when authz is enabled.
@@ -363,9 +442,9 @@ spec:
                         type: object
                       rowFilterStore:
                         description: |-
-                          rowFilterStore is the OpenFGA store holding row-filter tuples. Defaults to
-                          "rowfilters". It is deliberately separate from store, because LakeKeeper
-                          migrates the authorization model in its own store.
+                          rowFilterStore is the OpenFGA store holding row-filter and column-access
+                          tuples. Defaults to "rowfilters". It is deliberately separate from store,
+                          because LakeKeeper migrates the authorization model in its own store.
                         type: string
                       store:
                         description: store is the OpenFGA store name LakeKeeper uses.
@@ -1333,7 +1412,8 @@ spec:
               rowFilterStoreID:
                 description: |-
                   rowFilterStoreID is the OpenFGA store id the operator provisioned for row
-                  filters. Use it when writing tuples against the OpenFGA API.
+                  filters and column access. Use it when writing tuples against the OpenFGA
+                  API.
                 type: string
               trinoEndpoint:
                 description: trinoEndpoint is the in-cluster HTTP URL of the Trino

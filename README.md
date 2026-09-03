@@ -123,9 +123,12 @@ make build-installer IMG=$IMG   # writes dist/install.yaml
 ## Row-level access control
 
 LakeKeeper and OpenFGA authorize whole objects: a warehouse, a namespace, a
-table. `spec.authz.rowFilters` narrows a table a user may already read down to
-the rows they are entitled to, by pinning a column to an OpenFGA object type
-whose members are that column's permitted values:
+table. Two optional lists narrow that further in Trino:
+
+- `spec.authz.rowFilters` keeps only the rows whose key column holds a value
+  the user may see.
+- `spec.authz.columnAccess` replaces a restricted column with a mask (NULL by
+  default) unless the user holds a grant on that column.
 
 ```yaml
 spec:
@@ -137,16 +140,24 @@ spec:
         openfga:
           type: region
           relation: viewer
+    columnAccess:
+      - schema: sales
+        table: orders
+        column: ssn
+        openfga:
+          type: column
+          relation: viewer
 ```
 
 The operator provisions a dedicated OpenFGA store for these types (separate
 from LakeKeeper's, whose authorization model LakeKeeper migrates itself), points
-Trino's `opa.policy.row-filters-uri` at OPA, and OPA turns each user's grants
-into an extra `WHERE region IN (...)` clause per query.
+Trino at OPA's row-filter and batch-column-mask endpoints, and OPA turns each
+user's grants into a `WHERE region IN (...)` clause or a column mask.
 
-Granting a user a value is deliberately not the operator's job, since it owns
-neither your user list nor your data. Write those tuples against the store id in
-`status.rowFilterStoreID`, using the API key in secret `openfga/openfga`:
+Granting a user a value or a column is deliberately not the operator's job,
+since it owns neither your user list nor your data. Write those tuples against
+the store id in `status.rowFilterStoreID`, using the API key in secret
+`openfga/openfga`:
 
 ```bash
 STORE=$(kubectl get dataplatform <name> -o jsonpath='{.status.rowFilterStoreID}')
@@ -154,17 +165,20 @@ curl -sS "$OPENFGA/stores/$STORE/write" \
   -H "Authorization: Bearer $OPENFGA_API_KEY" -H 'Content-Type: application/json' \
   -d '{"writes":{"tuple_keys":[
         {"user":"user:alice","relation":"viewer","object":"region:emea"},
-        {"user":"group:analysts#member","relation":"viewer","object":"region:us-east"}
+        {"user":"group:analysts#member","relation":"viewer","object":"region:us-east"},
+        {"user":"user:alice","relation":"viewer","object":"column:lakekeeper.sales.orders.ssn"}
       ]}}'
 ```
 
-Tuple users are Trino usernames (the `preferred_username` claim), and a relation
-may be granted to a user directly or to a group's members. Filters fail closed:
-a user with no matching grant sees no rows, and so does everyone if OpenFGA
-becomes unreachable. See `config/samples/dataplatform_v1alpha1_rowfilters.yaml`.
+The default column object is `{catalog}.{schema}.{table}.{column}`. Set
+`openfga.object` to a short name such as `ssn` to share one grant across
+tables. Tuple users are Trino usernames (the `preferred_username` claim), and a
+relation may be granted to a user directly or to a group's members.
 
-Column masking is not wired up yet; it uses the same OPA plumbing
-(`opa.policy.batch-column-masking-uri`) if you need it.
+Both features fail closed: a user with no row-filter grant sees no rows, a
+user with no column grant sees the mask, and everyone does if OpenFGA becomes
+unreachable. Restricted columns still appear in the schema; their values do
+not. See `config/samples/dataplatform_v1alpha1_rowfilters.yaml`.
 
 ## Adding new APIs
 

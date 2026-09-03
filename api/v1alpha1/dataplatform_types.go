@@ -59,11 +59,15 @@ const (
 	DefaultTrinoCatalog = "lakekeeper"
 	// DefaultRowFilterStore is a second OpenFGA store, separate from the one
 	// LakeKeeper owns. LakeKeeper migrates its own authorization model, so the
-	// row-filter types cannot live alongside it.
+	// row-filter and column-access types cannot live alongside it.
 	DefaultRowFilterStore = "rowfilters"
 	// DefaultRowFilterRelation is the OpenFGA relation a user must hold on a
-	// value object for that value to pass the row filter.
-	DefaultRowFilterRelation  = "viewer"
+	// value object for that value to pass a row filter, or on a column object
+	// to see that column unmasked.
+	DefaultRowFilterRelation = "viewer"
+	// DefaultColumnMask is the SQL expression Trino applies to a restricted
+	// column when the user has no grant. NULL is valid for every Trino type.
+	DefaultColumnMask         = "NULL"
 	DefaultWarehouseName      = "default"
 	DefaultPostgresStorage    = "10Gi"
 	DefaultMinioStorage       = "20Gi"
@@ -248,6 +252,80 @@ type AuthzSpec struct {
 	// +optional
 	// +listType=atomic
 	RowFilters []RowFilterSpec `json:"rowFilters,omitempty"`
+
+	// columnAccess restricts which columns each user sees in Trino. LakeKeeper
+	// grants access to whole tables; these entries hide a column's values
+	// unless the user holds the named relation on the column's OpenFGA object.
+	//
+	// The default object id is "{catalog}.{schema}.{table}.{column}", so
+	// "user:alice viewer column:lakekeeper.sales.orders.ssn" reveals ssn.
+	// Set openfga.object to share one grant across tables, for example "ssn".
+	//
+	// Users without a grant see the mask expression (NULL by default). The
+	// column still appears in the schema; its values do not. Fails closed:
+	// an unreachable OpenFGA masks every restricted column.
+	// +optional
+	// +listType=atomic
+	ColumnAccess []ColumnAccessSpec `json:"columnAccess,omitempty"`
+}
+
+// ColumnAccessSpec hides one Trino column from users who lack an OpenFGA grant.
+type ColumnAccessSpec struct {
+	// catalog is the Trino catalog holding the table. Defaults to "lakekeeper",
+	// the catalog the operator creates for the managed warehouse.
+	// +optional
+	Catalog string `json:"catalog,omitempty"`
+
+	// schema is the Trino schema, which is a LakeKeeper namespace.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Schema string `json:"schema"`
+
+	// table is the table holding the column.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Table string `json:"table"`
+
+	// column is the column to hide. It must match the column's case as stored
+	// in the table, which Iceberg normally lowercases.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern="^[A-Za-z_][A-Za-z0-9_]*$"
+	Column string `json:"column"`
+
+	// mask is the SQL expression Trino substitutes for the column when the
+	// user has no grant. Defaults to NULL. This value is taken from the CR,
+	// not from OpenFGA, and is applied as a view expression.
+	// +optional
+	// +kubebuilder:validation:MaxLength=256
+	Mask string `json:"mask,omitempty"`
+
+	// openfga names the object type and relation that grant an unmasked view
+	// of this column.
+	// +kubebuilder:validation:Required
+	OpenFGA ColumnAccessSubjectSpec `json:"openfga"`
+}
+
+// ColumnAccessSubjectSpec points at the OpenFGA object that represents one
+// restricted column.
+type ColumnAccessSubjectSpec struct {
+	// type is the OpenFGA object type. Combined with object, this is the
+	// tuple target, for example "column:lakekeeper.sales.orders.ssn".
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern="^[a-zA-Z0-9_][a-zA-Z0-9_-]*$"
+	Type string `json:"type"`
+
+	// relation is the relation a user must hold to see the column unmasked.
+	// Defaults to "viewer". Assignable to users and to group members.
+	// +optional
+	// +kubebuilder:validation:Pattern="^[a-zA-Z0-9_][a-zA-Z0-9_-]*$"
+	Relation string `json:"relation,omitempty"`
+
+	// object is the OpenFGA object id. Defaults to
+	// "{catalog}.{schema}.{table}.{column}". Set this to a short name such as
+	// "ssn" to grant that column on every table that uses the same type.
+	// +optional
+	// +kubebuilder:validation:Pattern="^[a-zA-Z0-9._|-]+$"
+	Object string `json:"object,omitempty"`
 }
 
 // RowFilterSpec restricts one Trino table to the rows a user is allowed to see.
@@ -320,9 +398,9 @@ type OpenFGASpec struct {
 	// +optional
 	Store string `json:"store,omitempty"`
 
-	// rowFilterStore is the OpenFGA store holding row-filter tuples. Defaults to
-	// "rowfilters". It is deliberately separate from store, because LakeKeeper
-	// migrates the authorization model in its own store.
+	// rowFilterStore is the OpenFGA store holding row-filter and column-access
+	// tuples. Defaults to "rowfilters". It is deliberately separate from store,
+	// because LakeKeeper migrates the authorization model in its own store.
 	// +optional
 	RowFilterStore string `json:"rowFilterStore,omitempty"`
 
@@ -652,7 +730,8 @@ type DataPlatformStatus struct {
 	OpenFGAEndpoint string `json:"openfgaEndpoint,omitempty"`
 
 	// rowFilterStoreID is the OpenFGA store id the operator provisioned for row
-	// filters. Use it when writing tuples against the OpenFGA API.
+	// filters and column access. Use it when writing tuples against the OpenFGA
+	// API.
 	// +optional
 	RowFilterStoreID string `json:"rowFilterStoreID,omitempty"`
 }

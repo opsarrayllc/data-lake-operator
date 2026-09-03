@@ -33,3 +33,13 @@ filters := parsed if {
 	raw != ""
 	parsed := json.unmarshal(raw)
 }
+
+# Column restrictions, as rendered from spec.authz.columnAccess. Each entry has
+# catalog, schema, table, column, mask, type, relation and object fields.
+default column_access := []
+
+column_access := parsed if {
+	raw := object.get(env, "TRINO_COLUMN_ACCESS", "")
+	raw != ""
+	parsed := json.unmarshal(raw)
+}

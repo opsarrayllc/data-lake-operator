@@ -1,29 +1,30 @@
-# DataPlatform with row-level access control in Trino.
+# DataPlatform with row- and column-level access control in Trino.
 #
-# LakeKeeper decides who may read a table; these row filters narrow a readable
-# table down to the rows whose key column holds a value the user is entitled to.
-# The operator provisions an OpenFGA store with a "region" and a "tenant" type,
-# then OPA turns a user's grants into an extra WHERE clause per query.
+# LakeKeeper decides who may read a table. Row filters then narrow a readable
+# table down to the rows a user is entitled to, and column access hides the
+# values of restricted columns unless the user holds a grant.
 #
-# The operator does not own the user-to-value grants, so write those tuples
-# yourself against the store id in status.rowFilterStoreID:
+# The operator provisions one OpenFGA store for both. Write the tuples yourself
+# against the store id in status.rowFilterStoreID:
 #
 #   kubectl get dataplatform rowfilters -o jsonpath='{.status.rowFilterStoreID}'
 #
-#   # alice sees EMEA rows; the analysts group sees US rows
+#   # alice sees EMEA rows and the ssn column; analysts see US rows
 #   curl -sS "$OPENFGA/stores/$STORE/write" \
 #     -H "Authorization: Bearer $OPENFGA_API_KEY" \
 #     -H 'Content-Type: application/json' \
 #     -d '{"writes":{"tuple_keys":[
 #           {"user":"user:alice","relation":"viewer","object":"region:emea"},
-#           {"user":"group:analysts#member","relation":"viewer","object":"region:us-east"}
+#           {"user":"group:analysts#member","relation":"viewer","object":"region:us-east"},
+#           {"user":"user:alice","relation":"viewer","object":"column:lakekeeper.sales.orders.ssn"}
 #         ]}}'
 #
 # The OPENFGA_API_KEY is in secret openfga/openfga, key apiKey. Tuple users are
 # Trino usernames, which is the preferred_username claim.
 #
-# A user with no grant on a filtered table sees no rows, and so does every user
-# if OpenFGA becomes unreachable.
+# A user with no row-filter grant sees no rows. A user with no column grant
+# sees NULL (or the configured mask) in that column. Both fail closed if
+# OpenFGA becomes unreachable.
 apiVersion: dataplatform.opsarray.io/v1alpha1
 kind: DataPlatform
 metadata:
@@ -62,6 +63,35 @@ spec:
         openfga:
           type: region
           relation: auditor
+
+    columnAccess:
+      # ssn is visible only to users who hold viewer on this column object.
+      # Everyone else sees NULL. The column still appears in the schema.
+      - schema: sales
+        table: orders
+        column: ssn
+        openfga:
+          type: column
+          relation: viewer
+
+      # A short object id shares one grant across tables: "column:email"
+      # unmasks email on both orders and invoices.
+      - schema: sales
+        table: orders
+        column: email
+        mask: "'***'"
+        openfga:
+          type: column
+          relation: viewer
+          object: email
+      - schema: sales
+        table: invoices
+        column: email
+        mask: "'***'"
+        openfga:
+          type: column
+          relation: viewer
+          object: email
   storage:
     embedded: true
   lakekeeper:

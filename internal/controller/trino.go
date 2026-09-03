@@ -54,7 +54,7 @@ func (r *DataPlatformReconciler) reconcileTrino(ctx context.Context, dp *datapla
 	if fga.enabled && oidc.enabled {
 		opaURL = fga.opaURL
 	}
-	accessControl := trinoAccessControlProperties(opaURL, dp.Spec.Authz.HasRowFilters())
+	accessControl := trinoAccessControlProperties(opaURL, dp.Spec.Authz.HasRowFilters(), dp.Spec.Authz.HasColumnAccess())
 	cfgHash := hashData(coordCfg, workerCfg, catalogHash, accessControl)
 
 	if err := r.applyTrinoConfigMap(ctx, dp, ns, coordCfg, workerCfg, accessControl); err != nil {
@@ -120,7 +120,7 @@ func trinoUIAuthEnabled(oidc oidcConfig, publicURL string) bool {
 	return oidc.enabled && strings.TrimRight(publicURL, "/") != ""
 }
 
-func trinoAccessControlProperties(opaURL string, rowFilters bool) string {
+func trinoAccessControlProperties(opaURL string, rowFilters, columnAccess bool) string {
 	if opaURL == "" {
 		return ""
 	}
@@ -129,10 +129,13 @@ func trinoAccessControlProperties(opaURL string, rowFilters bool) string {
 		"opa.policy.uri":         opaURL + "/v1/data/trino/allow",
 		"opa.policy.batched-uri": opaURL + "/v1/data/trino/batch",
 	}
-	// Left unset when no filter is configured: Trino skips row filtering
-	// entirely rather than asking OPA for a decision it cannot make.
+	// Left unset when unused: Trino skips that check rather than asking
+	// OPA for a decision it cannot make.
 	if rowFilters {
 		props["opa.policy.row-filters-uri"] = opaURL + "/v1/data/trino/row_filters"
+	}
+	if columnAccess {
+		props["opa.policy.batch-column-masking-uri"] = opaURL + "/v1/data/trino/batch_column_masks"
 	}
 	return renderProperties(props)
 }

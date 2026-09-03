@@ -67,20 +67,73 @@ func TestRowFiltersJSONResolvesDefaults(t *testing.T) {
 // TestRowFilterAuthzTypesMergeRelations checks that filters sharing an OpenFGA
 // type collapse into one type definition. Two definitions for one type is not a
 // valid authorization model.
-func TestRowFilterAuthzTypesMergeRelations(t *testing.T) {
-	types := rowFilterAuthzTypes([]dataplatformv1alpha1.RowFilterSpec{
-		rowFilter("sales", "orders", "region", "region", "viewer"),
-		rowFilter("sales", "invoices", "region", "region", "auditor"),
-		rowFilter("sales", "invoices", "region", "region", "viewer"),
-		rowFilter("hr", "staff", "office", "tenant", ""),
+func TestAccessAuthzTypesMergeRelations(t *testing.T) {
+	types := accessAuthzTypes(dataplatformv1alpha1.AuthzSpec{
+		RowFilters: []dataplatformv1alpha1.RowFilterSpec{
+			rowFilter("sales", "orders", "region", "region", "viewer"),
+			rowFilter("sales", "invoices", "region", "region", "auditor"),
+			rowFilter("sales", "invoices", "region", "region", "viewer"),
+			rowFilter("hr", "staff", "office", "tenant", ""),
+		},
+		ColumnAccess: []dataplatformv1alpha1.ColumnAccessSpec{{
+			Schema:  "sales",
+			Table:   "orders",
+			Column:  "ssn",
+			OpenFGA: dataplatformv1alpha1.ColumnAccessSubjectSpec{Type: "column", Relation: "viewer"},
+		}},
 	})
 
 	want := []AuthzType{
+		{Name: "column", Relations: []string{"viewer"}},
 		{Name: "region", Relations: []string{"auditor", "viewer"}},
 		{Name: "tenant", Relations: []string{dataplatformv1alpha1.DefaultRowFilterRelation}},
 	}
 	if !reflect.DeepEqual(types, want) {
 		t.Errorf("authz types = %v, want %v", types, want)
+	}
+}
+
+func TestColumnAccessJSONResolvesDefaults(t *testing.T) {
+	access := []dataplatformv1alpha1.ColumnAccessSpec{
+		{
+			Schema:  "sales",
+			Table:   "orders",
+			Column:  "ssn",
+			OpenFGA: dataplatformv1alpha1.ColumnAccessSubjectSpec{Type: "column"},
+		},
+		{
+			Catalog: "warehouse",
+			Schema:  "sales",
+			Table:   "invoices",
+			Column:  "email",
+			Mask:    "'***'",
+			OpenFGA: dataplatformv1alpha1.ColumnAccessSubjectSpec{Type: "pii", Relation: "reader", Object: "email"},
+		},
+	}
+
+	var parsed []map[string]any
+	if err := json.Unmarshal([]byte(columnAccessJSON(access)), &parsed); err != nil {
+		t.Fatalf("column access is not valid JSON: %v", err)
+	}
+	if len(parsed) != 2 {
+		t.Fatalf("got %d entries, want 2", len(parsed))
+	}
+
+	want := map[string]any{
+		"catalog":  dataplatformv1alpha1.DefaultTrinoCatalog,
+		"schema":   "sales",
+		"table":    "orders",
+		"column":   "ssn",
+		"mask":     dataplatformv1alpha1.DefaultColumnMask,
+		"type":     "column",
+		"relation": dataplatformv1alpha1.DefaultRowFilterRelation,
+		"object":   "lakekeeper.sales.orders.ssn",
+	}
+	if !reflect.DeepEqual(parsed[0], want) {
+		t.Errorf("defaulted access = %v, want %v", parsed[0], want)
+	}
+	if parsed[1]["object"] != "email" || parsed[1]["mask"] != "'***'" || parsed[1]["relation"] != "reader" {
+		t.Errorf("explicit access lost its values: %v", parsed[1])
 	}
 }
 
@@ -169,14 +222,30 @@ func TestAccessControlRowFilterURI(t *testing.T) {
 	const opaURL = "http://opa.openfga.svc:8181"
 	const property = "opa.policy.row-filters-uri=http://opa.openfga.svc:8181/v1/data/trino/row_filters"
 
-	if got := trinoAccessControlProperties(opaURL, false); strings.Contains(got, "row-filters-uri") {
+	if got := trinoAccessControlProperties(opaURL, false, false); strings.Contains(got, "row-filters-uri") {
 		t.Errorf("row filter URI configured without any filter:\n%s", got)
 	}
-	got := trinoAccessControlProperties(opaURL, true)
+	got := trinoAccessControlProperties(opaURL, true, false)
 	if !strings.Contains(got, property) {
 		t.Errorf("access control properties missing %q:\n%s", property, got)
 	}
-	if got := trinoAccessControlProperties("", true); got != "" {
+	if got := trinoAccessControlProperties("", true, false); got != "" {
 		t.Errorf("access control configured without OPA: %q", got)
+	}
+}
+
+func TestAccessControlColumnMaskURI(t *testing.T) {
+	const opaURL = "http://opa.openfga.svc:8181"
+	const property = "opa.policy.batch-column-masking-uri=http://opa.openfga.svc:8181/v1/data/trino/batch_column_masks"
+
+	if got := trinoAccessControlProperties(opaURL, false, false); strings.Contains(got, "column-masking") {
+		t.Errorf("column mask URI configured without any restriction:\n%s", got)
+	}
+	got := trinoAccessControlProperties(opaURL, false, true)
+	if !strings.Contains(got, property) {
+		t.Errorf("access control properties missing %q:\n%s", property, got)
+	}
+	if strings.Contains(got, "row-filters-uri") {
+		t.Errorf("row filter URI configured without any filter:\n%s", got)
 	}
 }

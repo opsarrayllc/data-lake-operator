@@ -96,19 +96,18 @@ func (r *DataPlatformReconciler) applyOPAPolicies(ctx context.Context, dp *datap
 	})
 }
 
-// opaRowFilterEnv configures the operator's row filter policies. It is empty
-// when no filter is configured, which leaves the row filter rule with nothing
-// to match and every table unfiltered.
+// opaAccessEnv configures the operator's row-filter and column-access policies.
+// It is empty when neither is configured, which leaves those rules with
+// nothing to match.
 //
-// The filters travel as an environment variable rather than another key in the
-// policy ConfigMap because OPA does not run with --watch: a ConfigMap edit
-// would sit unread until the pod restarted, whereas changing the pod's env
-// rolls it.
-func opaRowFilterEnv(dp *dataplatformv1alpha1.DataPlatform, fga openfgaConfig) []corev1.EnvVar {
-	if !dp.Spec.Authz.HasRowFilters() {
+// The policies travel as environment variables rather than ConfigMap keys
+// because OPA does not run with --watch: a ConfigMap edit would sit unread
+// until the pod restarted, whereas changing the pod's env rolls it.
+func opaAccessEnv(dp *dataplatformv1alpha1.DataPlatform, fga openfgaConfig) []corev1.EnvVar {
+	if !dp.Spec.Authz.HasAccessPolicies() {
 		return nil
 	}
-	return []corev1.EnvVar{
+	env := []corev1.EnvVar{
 		{Name: "OPENFGA_URL", Value: fga.httpEndpoint},
 		{Name: "OPENFGA_STORE_ID", Value: fga.rowFilterStoreID},
 		{
@@ -120,8 +119,14 @@ func opaRowFilterEnv(dp *dataplatformv1alpha1.DataPlatform, fga openfgaConfig) [
 				},
 			},
 		},
-		{Name: "TRINO_ROW_FILTERS", Value: rowFiltersJSON(dp.Spec.Authz.RowFilters)},
 	}
+	if dp.Spec.Authz.HasRowFilters() {
+		env = append(env, corev1.EnvVar{Name: "TRINO_ROW_FILTERS", Value: rowFiltersJSON(dp.Spec.Authz.RowFilters)})
+	}
+	if dp.Spec.Authz.HasColumnAccess() {
+		env = append(env, corev1.EnvVar{Name: "TRINO_COLUMN_ACCESS", Value: columnAccessJSON(dp.Spec.Authz.ColumnAccess)})
+	}
+	return env
 }
 
 // rowFiltersJSON renders the filters in the shape rowfilters-configuration.rego
@@ -142,6 +147,29 @@ func rowFiltersJSON(filters []dataplatformv1alpha1.RowFilterSpec) string {
 	raw, err := json.Marshal(entries)
 	if err != nil {
 		// The map holds only strings and bools, so this cannot fail.
+		return "[]"
+	}
+	return string(raw)
+}
+
+// columnAccessJSON renders the restrictions in the shape
+// rowfilters-configuration.rego expects, with every default resolved.
+func columnAccessJSON(access []dataplatformv1alpha1.ColumnAccessSpec) string {
+	entries := make([]map[string]any, 0, len(access))
+	for i := range access {
+		entries = append(entries, map[string]any{
+			"catalog":  access[i].CatalogOrDefault(),
+			"schema":   access[i].Schema,
+			"table":    access[i].Table,
+			"column":   access[i].Column,
+			"mask":     access[i].MaskOrDefault(),
+			"type":     access[i].OpenFGA.Type,
+			"relation": access[i].OpenFGA.RelationOrDefault(),
+			"object":   access[i].ObjectOrDefault(),
+		})
+	}
+	raw, err := json.Marshal(entries)
+	if err != nil {
 		return "[]"
 	}
 	return string(raw)
@@ -209,7 +237,7 @@ func (r *DataPlatformReconciler) applyOPADeployment(
 				{Name: "TRINO_LAKEKEEPER_CATALOG_NAME", Value: nameLakekeeper},
 				{Name: "LAKEKEEPER_LAKEKEEPER_WAREHOUSE", Value: dp.Spec.Lakekeeper.Warehouse.NameOrDefault()},
 				{Name: "TRINO_ALLOW_UNMANAGED_CATALOGS", Value: "true"},
-			}, opaRowFilterEnv(dp, fga)...),
+			}, opaAccessEnv(dp, fga)...),
 			Ports: []corev1.ContainerPort{{Name: portNameHTTP, ContainerPort: opaPort}},
 			VolumeMounts: []corev1.VolumeMount{{
 				Name:      volumeConfig,
