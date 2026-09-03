@@ -224,6 +224,31 @@ func (s *OpenFGASpec) StoreOrDefault() string {
 	return stringOrDefault(s.Store, DefaultOpenFGAStore)
 }
 
+// RowFilterStoreOrDefault returns the OpenFGA store name used for row filters.
+func (s *OpenFGASpec) RowFilterStoreOrDefault() string {
+	return stringOrDefault(s.RowFilterStore, DefaultRowFilterStore)
+}
+
+// HasRowFilters reports whether any row filter is configured.
+func (s *AuthzSpec) HasRowFilters() bool {
+	return s.IsEnabled() && len(s.RowFilters) > 0
+}
+
+// CatalogOrDefault returns the Trino catalog the filtered table lives in.
+func (s *RowFilterSpec) CatalogOrDefault() string {
+	return stringOrDefault(s.Catalog, DefaultTrinoCatalog)
+}
+
+// IsNumeric reports whether the column is compared against unquoted literals.
+func (s *RowFilterSpec) IsNumeric() bool {
+	return s.Numeric != nil && *s.Numeric
+}
+
+// RelationOrDefault returns the OpenFGA relation guarding a permitted value.
+func (s *RowFilterSubjectSpec) RelationOrDefault() string {
+	return stringOrDefault(s.Relation, DefaultRowFilterRelation)
+}
+
 // AudienceOrDefault returns the expected JWT audience.
 func (s *OIDCSpec) AudienceOrDefault() string {
 	return stringOrDefault(s.Audience, DefaultOIDCAudience)

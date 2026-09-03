@@ -1,0 +1,73 @@
+# DataPlatform with row-level access control in Trino.
+#
+# LakeKeeper decides who may read a table; these row filters narrow a readable
+# table down to the rows whose key column holds a value the user is entitled to.
+# The operator provisions an OpenFGA store with a "region" and a "tenant" type,
+# then OPA turns a user's grants into an extra WHERE clause per query.
+#
+# The operator does not own the user-to-value grants, so write those tuples
+# yourself against the store id in status.rowFilterStoreID:
+#
+#   kubectl get dataplatform rowfilters -o jsonpath='{.status.rowFilterStoreID}'
+#
+#   # alice sees EMEA rows; the analysts group sees US rows
+#   curl -sS "$OPENFGA/stores/$STORE/write" \
+#     -H "Authorization: Bearer $OPENFGA_API_KEY" \
+#     -H 'Content-Type: application/json' \
+#     -d '{"writes":{"tuple_keys":[
+#           {"user":"user:alice","relation":"viewer","object":"region:emea"},
+#           {"user":"group:analysts#member","relation":"viewer","object":"region:us-east"}
+#         ]}}'
+#
+# The OPENFGA_API_KEY is in secret openfga/openfga, key apiKey. Tuple users are
+# Trino usernames, which is the preferred_username claim.
+#
+# A user with no grant on a filtered table sees no rows, and so does every user
+# if OpenFGA becomes unreachable.
+apiVersion: dataplatform.opsarray.io/v1alpha1
+kind: DataPlatform
+metadata:
+  name: rowfilters
+spec:
+  auth:
+    embedded: true
+  authz:
+    embedded: true
+    rowFilters:
+      # sales.orders is visible only where region matches a region the user may
+      # view: "region:emea" permits rows whose region column is "emea".
+      - schema: sales
+        table: orders
+        column: region
+        openfga:
+          type: region
+          relation: viewer
+
+      # A second filter on the same table is ANDed with the first, so a row must
+      # clear both the region and the tenant check.
+      - schema: sales
+        table: orders
+        column: tenant_id
+        # An integer column, compared against unquoted literals.
+        numeric: true
+        openfga:
+          type: tenant
+          relation: viewer
+
+      # Types and relations are shared freely across tables. Granting
+      # "region:emea" once covers every table filtered on that type.
+      - schema: sales
+        table: invoices
+        column: region
+        openfga:
+          type: region
+          relation: auditor
+  storage:
+    embedded: true
+  lakekeeper:
+    enabled: true
+    warehouse:
+      name: default
+  trino:
+    enabled: true
+    workers: 0

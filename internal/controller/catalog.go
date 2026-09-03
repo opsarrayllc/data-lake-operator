@@ -45,8 +45,24 @@ type CatalogClient interface {
 	Bootstrap(ctx context.Context, namespace, service string, port int32, bearer string) error
 	EnsureGrants(ctx context.Context, namespace, service string, port int32, bearer string, principals []CatalogPrincipal) error
 	EnsureWarehouse(ctx context.Context, namespace, service string, port int32, bearer string, req WarehouseRequest) error
+	EnsureAuthzStore(ctx context.Context, namespace, service string, port int32, bearer string, req AuthzStoreRequest) (string, error)
 	FormPost(ctx context.Context, namespace, service string, port int32, path string, form url.Values) (int, []byte, error)
 	FetchToken(ctx context.Context, tokenURL string, form url.Values) (int, []byte, error)
+}
+
+// AuthzStoreRequest describes an OpenFGA store the operator owns outright,
+// along with the object types its authorization model must define.
+type AuthzStoreRequest struct {
+	Store string
+	Types []AuthzType
+}
+
+// AuthzType is one OpenFGA object type whose members are the values permitted
+// in a filtered column, plus the relations that grant them.
+type AuthzType struct {
+	Name string
+	// Relations are assignable to "user" and to "group#member".
+	Relations []string
 }
 
 // CatalogPrincipal is an identity the operator provisions and grants access to

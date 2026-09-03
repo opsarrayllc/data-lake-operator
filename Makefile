@@ -94,6 +94,15 @@ test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expect
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
 
+.PHONY: test-rego
+test-rego: opa ## Run the OPA policy tests.
+# The operator flattens both policy directories into one ConfigMap, so the
+# policies must be checked as one bundle rather than per directory.
+	@rm -rf "$(REGO_BUILD)" && mkdir -p "$(REGO_BUILD)"
+	@cp $(REGO_DIRS:%=%/*.rego) internal/controller/embed/rowfilters/tests/*.rego "$(REGO_BUILD)/"
+	"$(OPA)" check --strict "$(REGO_BUILD)"
+	"$(OPA)" test "$(REGO_BUILD)"
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
 	"$(GOLANGCI_LINT)" run
@@ -222,10 +231,19 @@ KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+OPA ?= $(LOCALBIN)/opa
+
+## Embedded OPA policy directories, and the scratch directory test-rego
+## flattens them into.
+REGO_DIRS ?= internal/controller/embed/opapolicies internal/controller/embed/rowfilters
+REGO_BUILD ?= $(LOCALBIN)/rego
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.8.1
 CONTROLLER_TOOLS_VERSION ?= v0.21.0
+# Keep in step with DefaultOPAImage in api/v1alpha1/dataplatform_types.go, so
+# the policies are tested against the OPA that runs them.
+OPA_VERSION ?= v1.10.1
 
 #ENVTEST_VERSION is the controller-runtime version to use for setup-envtest, derived from go.mod
 ENVTEST_VERSION ?= $(shell v='$(call gomodver,sigs.k8s.io/controller-runtime)'; \
@@ -260,6 +278,11 @@ setup-envtest: envtest ## Download the binaries required for ENVTEST in the loca
 envtest: $(ENVTEST) ## Download setup-envtest locally if necessary.
 $(ENVTEST): $(LOCALBIN)
 	$(call go-install-tool,$(ENVTEST),sigs.k8s.io/controller-runtime/tools/setup-envtest,$(ENVTEST_VERSION))
+
+.PHONY: opa
+opa: $(OPA) ## Download opa locally if necessary.
+$(OPA): $(LOCALBIN)
+	$(call go-install-tool,$(OPA),github.com/open-policy-agent/opa,$(OPA_VERSION))
 
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.

@@ -361,11 +361,89 @@ spec:
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
                         type: object
+                      rowFilterStore:
+                        description: |-
+                          rowFilterStore is the OpenFGA store holding row-filter tuples. Defaults to
+                          "rowfilters". It is deliberately separate from store, because LakeKeeper
+                          migrates the authorization model in its own store.
+                        type: string
                       store:
                         description: store is the OpenFGA store name LakeKeeper uses.
                           Defaults to "lakekeeper".
                         type: string
                     type: object
+                  rowFilters:
+                    description: |-
+                      rowFilters restrict which rows each user sees in Trino. LakeKeeper grants
+                      access to whole tables; these entries narrow a granted table down to the
+                      rows whose key column holds a value the user may see.
+
+                      Each entry pins one table to one column, and names the OpenFGA object type
+                      whose members are that column's permitted values. The operator provisions
+                      the types in a dedicated OpenFGA store; write the user-to-value tuples
+                      yourself, for example "user:alice viewer region:emea".
+
+                      Requires Trino and authz to be enabled. A table with no reachable
+                      permitted values returns no rows.
+                    items:
+                      description: RowFilterSpec restricts one Trino table to the
+                        rows a user is allowed to see.
+                      properties:
+                        catalog:
+                          description: |-
+                            catalog is the Trino catalog holding the table. Defaults to "lakekeeper",
+                            the catalog the operator creates for the managed warehouse.
+                          type: string
+                        column:
+                          description: |-
+                            column is the column whose value decides whether a row is visible. It is
+                            emitted as a quoted identifier, so it must match the column's case as
+                            stored in the table, which Iceberg normally lowercases.
+                          pattern: ^[A-Za-z_][A-Za-z0-9_]*$
+                          type: string
+                        numeric:
+                          description: |-
+                            numeric compares the column against unquoted SQL literals, for integer
+                            and decimal columns. Defaults to false, which emits quoted strings.
+                            Non-numeric values are dropped from a numeric filter.
+                          type: boolean
+                        openfga:
+                          description: openfga names the object type and relation
+                            that hold the permitted values.
+                          properties:
+                            relation:
+                              description: |-
+                                relation is the relation a user must hold on a value object. Defaults to
+                                "viewer". The operator defines it as assignable to users and to group
+                                members, so tuples may target "user:alice" or "group:analysts#member".
+                              pattern: ^[a-zA-Z0-9_][a-zA-Z0-9_-]*$
+                              type: string
+                            type:
+                              description: |-
+                                type is the OpenFGA object type. Object ids under this type are matched
+                                against the column, so "region:emea" permits the value "emea".
+                              pattern: ^[a-zA-Z0-9_][a-zA-Z0-9_-]*$
+                              type: string
+                          required:
+                          - type
+                          type: object
+                        schema:
+                          description: schema is the Trino schema, which is a LakeKeeper
+                            namespace.
+                          minLength: 1
+                          type: string
+                        table:
+                          description: table is the table to filter.
+                          minLength: 1
+                          type: string
+                      required:
+                      - column
+                      - openfga
+                      - schema
+                      - table
+                      type: object
+                    type: array
+                    x-kubernetes-list-type: atomic
                 type: object
               lakekeeper:
                 description: lakekeeper configures the Iceberg REST catalog.
@@ -1251,6 +1329,11 @@ spec:
               openfgaEndpoint:
                 description: openfgaEndpoint is the in-cluster gRPC URL of OpenFGA
                   when it is embedded.
+                type: string
+              rowFilterStoreID:
+                description: |-
+                  rowFilterStoreID is the OpenFGA store id the operator provisioned for row
+                  filters. Use it when writing tuples against the OpenFGA API.
                 type: string
               trinoEndpoint:
                 description: trinoEndpoint is the in-cluster HTTP URL of the Trino

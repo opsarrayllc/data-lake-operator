@@ -37,6 +37,7 @@ downloaded into `./bin` automatically by the Makefile. That directory is gitigno
 ```bash
 make manifests generate   # regenerate CRDs, RBAC, and DeepCopy code after editing types
 make test                 # unit + envtest suite
+make test-rego            # OPA policy tests (internal/controller/embed)
 make lint                 # golangci-lint
 make build                # compile the manager to bin/manager
 make run                  # run the controller locally against your current kubecontext
@@ -118,6 +119,52 @@ To produce a single self-contained manifest for distribution:
 ```bash
 make build-installer IMG=$IMG   # writes dist/install.yaml
 ```
+
+## Row-level access control
+
+LakeKeeper and OpenFGA authorize whole objects: a warehouse, a namespace, a
+table. `spec.authz.rowFilters` narrows a table a user may already read down to
+the rows they are entitled to, by pinning a column to an OpenFGA object type
+whose members are that column's permitted values:
+
+```yaml
+spec:
+  authz:
+    rowFilters:
+      - schema: sales
+        table: orders
+        column: region
+        openfga:
+          type: region
+          relation: viewer
+```
+
+The operator provisions a dedicated OpenFGA store for these types (separate
+from LakeKeeper's, whose authorization model LakeKeeper migrates itself), points
+Trino's `opa.policy.row-filters-uri` at OPA, and OPA turns each user's grants
+into an extra `WHERE region IN (...)` clause per query.
+
+Granting a user a value is deliberately not the operator's job, since it owns
+neither your user list nor your data. Write those tuples against the store id in
+`status.rowFilterStoreID`, using the API key in secret `openfga/openfga`:
+
+```bash
+STORE=$(kubectl get dataplatform <name> -o jsonpath='{.status.rowFilterStoreID}')
+curl -sS "$OPENFGA/stores/$STORE/write" \
+  -H "Authorization: Bearer $OPENFGA_API_KEY" -H 'Content-Type: application/json' \
+  -d '{"writes":{"tuple_keys":[
+        {"user":"user:alice","relation":"viewer","object":"region:emea"},
+        {"user":"group:analysts#member","relation":"viewer","object":"region:us-east"}
+      ]}}'
+```
+
+Tuple users are Trino usernames (the `preferred_username` claim), and a relation
+may be granted to a user directly or to a group's members. Filters fail closed:
+a user with no matching grant sees no rows, and so does everyone if OpenFGA
+becomes unreachable. See `config/samples/dataplatform_v1alpha1_rowfilters.yaml`.
+
+Column masking is not wired up yet; it uses the same OPA plumbing
+(`opa.policy.batch-column-masking-uri`) if you need it.
 
 ## Adding new APIs
 

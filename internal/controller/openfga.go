@@ -19,7 +19,9 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/url"
+	"slices"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -27,6 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	dataplatformv1alpha1 "github.com/opsarrayllc/data-platform-operator/api/v1alpha1"
 )
@@ -37,6 +40,12 @@ type openfgaConfig struct {
 	store    string
 	apiKey   string
 	opaURL   string
+	// httpEndpoint is the REST API, which OPA uses to resolve row filters.
+	// endpoint is the gRPC one LakeKeeper speaks.
+	httpEndpoint string
+	// rowFilterStoreID is empty until OpenFGA is up and the store has been
+	// provisioned. Row filters deny every row until it is known.
+	rowFilterStoreID string
 }
 
 func (r *DataPlatformReconciler) reconcileAuthz(ctx context.Context, dp *dataplatformv1alpha1.DataPlatform) (openfgaConfig, bool, error) {
@@ -95,11 +104,12 @@ func (r *DataPlatformReconciler) reconcileOpenFGA(ctx context.Context, dp *datap
 		return openfgaConfig{}, false, err
 	}
 	cfg := openfgaConfig{
-		enabled:  true,
-		endpoint: dp.Status.OpenFGAEndpoint,
-		store:    spec.StoreOrDefault(),
-		apiKey:   apiKey,
-		opaURL:   clusterServiceURL(nameOPA, ns, opaPort),
+		enabled:      true,
+		endpoint:     dp.Status.OpenFGAEndpoint,
+		store:        spec.StoreOrDefault(),
+		apiKey:       apiKey,
+		opaURL:       clusterServiceURL(nameOPA, ns, opaPort),
+		httpEndpoint: clusterServiceURL(nameOpenFGA, ns, openfgaHTTPPort),
 	}
 
 	ready, err := r.deploymentReady(ctx, ns, nameOpenFGA)
@@ -111,8 +121,64 @@ func (r *DataPlatformReconciler) reconcileOpenFGA(ctx context.Context, dp *datap
 		setCondition(dp, dataplatformv1alpha1.ConditionOpenFGAReady, metav1.ConditionFalse, reasonNotReady, "OpenFGA Deployment is not ready")
 		return cfg, false, nil
 	}
+
+	storeID, err := r.reconcileRowFilterStore(ctx, dp, ns, apiKey)
+	if err != nil {
+		setCondition(dp, dataplatformv1alpha1.ConditionOpenFGAReady, metav1.ConditionFalse, reasonError, err.Error())
+		return cfg, false, err
+	}
+	cfg.rowFilterStoreID = storeID
+
 	setCondition(dp, dataplatformv1alpha1.ConditionOpenFGAReady, metav1.ConditionTrue, reasonReady, "OpenFGA is ready")
 	return cfg, true, nil
+}
+
+// reconcileRowFilterStore provisions the OpenFGA store and authorization model
+// backing spec.authz.rowFilters, and returns its store id.
+func (r *DataPlatformReconciler) reconcileRowFilterStore(
+	ctx context.Context,
+	dp *dataplatformv1alpha1.DataPlatform,
+	ns, apiKey string,
+) (string, error) {
+	log := logf.FromContext(ctx)
+	if !dp.Spec.Authz.HasRowFilters() || !dp.Spec.Trino.IsEnabled() {
+		dp.Status.RowFilterStoreID = ""
+		return "", nil
+	}
+	if r.Catalog == nil {
+		return "", fmt.Errorf("catalog client is not configured")
+	}
+	req := AuthzStoreRequest{
+		Store: dp.Spec.Authz.OpenFGA.RowFilterStoreOrDefault(),
+		Types: rowFilterAuthzTypes(dp.Spec.Authz.RowFilters),
+	}
+	storeID, err := r.Catalog.EnsureAuthzStore(ctx, ns, nameOpenFGA, openfgaHTTPPort, apiKey, req)
+	if err != nil {
+		return "", err
+	}
+	if storeID != dp.Status.RowFilterStoreID {
+		log.Info("Ensured OpenFGA row filter store", "store", req.Store, "id", storeID)
+	}
+	dp.Status.RowFilterStoreID = storeID
+	return storeID, nil
+}
+
+// rowFilterAuthzTypes collapses the configured filters into the OpenFGA object
+// types they need, merging the relations of filters that share a type.
+func rowFilterAuthzTypes(filters []dataplatformv1alpha1.RowFilterSpec) []AuthzType {
+	relations := map[string][]string{}
+	for i := range filters {
+		name := filters[i].OpenFGA.Type
+		relation := filters[i].OpenFGA.RelationOrDefault()
+		if !slices.Contains(relations[name], relation) {
+			relations[name] = append(relations[name], relation)
+		}
+	}
+	types := make([]AuthzType, 0, len(relations))
+	for _, name := range slices.Sorted(maps.Keys(relations)) {
+		types = append(types, AuthzType{Name: name, Relations: slices.Sorted(slices.Values(relations[name]))})
+	}
+	return types
 }
 
 func (r *DataPlatformReconciler) ensureOpenFGASecrets(ctx context.Context, dp *dataplatformv1alpha1.DataPlatform, ns string) error {

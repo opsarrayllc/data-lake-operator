@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"io/fs"
 	"path"
 	"strings"
@@ -45,7 +46,7 @@ func (r *DataPlatformReconciler) reconcileOPA(ctx context.Context, dp *dataplatf
 	if err := r.applyOPAService(ctx, dp, ns); err != nil {
 		return false, err
 	}
-	if err := r.applyOPADeployment(ctx, dp, ns, oidc); err != nil {
+	if err := r.applyOPADeployment(ctx, dp, ns, oidc, fga); err != nil {
 		return false, err
 	}
 	return r.deploymentReady(ctx, ns, nameOPA)
@@ -71,26 +72,79 @@ func (r *DataPlatformReconciler) applyOPAPolicies(ctx context.Context, dp *datap
 	return r.apply(ctx, dp, cm, func() error {
 		ensureLabels(cm, labels)
 		data := map[string]string{}
-		err := fs.WalkDir(opaPolicyFS, "embed/opapolicies", func(p string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if d.IsDir() || !strings.HasSuffix(p, ".rego") {
+		for _, dir := range opaPolicyDirs {
+			err := fs.WalkDir(opaPolicyFS, dir, func(p string, d fs.DirEntry, err error) error {
+				if err != nil {
+					return err
+				}
+				if d.IsDir() || !strings.HasSuffix(p, ".rego") {
+					return nil
+				}
+				raw, err := opaPolicyFS.ReadFile(p)
+				if err != nil {
+					return err
+				}
+				data[path.Base(p)] = string(raw)
 				return nil
-			}
-			raw, err := opaPolicyFS.ReadFile(p)
+			})
 			if err != nil {
 				return err
 			}
-			data[path.Base(p)] = string(raw)
-			return nil
-		})
-		if err != nil {
-			return err
 		}
 		cm.Data = data
 		return nil
 	})
+}
+
+// opaRowFilterEnv configures the operator's row filter policies. It is empty
+// when no filter is configured, which leaves the row filter rule with nothing
+// to match and every table unfiltered.
+//
+// The filters travel as an environment variable rather than another key in the
+// policy ConfigMap because OPA does not run with --watch: a ConfigMap edit
+// would sit unread until the pod restarted, whereas changing the pod's env
+// rolls it.
+func opaRowFilterEnv(dp *dataplatformv1alpha1.DataPlatform, fga openfgaConfig) []corev1.EnvVar {
+	if !dp.Spec.Authz.HasRowFilters() {
+		return nil
+	}
+	return []corev1.EnvVar{
+		{Name: "OPENFGA_URL", Value: fga.httpEndpoint},
+		{Name: "OPENFGA_STORE_ID", Value: fga.rowFilterStoreID},
+		{
+			Name: "OPENFGA_API_KEY",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: secretOpenFGA},
+					Key:                  keyOpenFGAAPIKey,
+				},
+			},
+		},
+		{Name: "TRINO_ROW_FILTERS", Value: rowFiltersJSON(dp.Spec.Authz.RowFilters)},
+	}
+}
+
+// rowFiltersJSON renders the filters in the shape rowfilters-configuration.rego
+// expects, with every default resolved so the policy never has to guess.
+func rowFiltersJSON(filters []dataplatformv1alpha1.RowFilterSpec) string {
+	entries := make([]map[string]any, 0, len(filters))
+	for i := range filters {
+		entries = append(entries, map[string]any{
+			"catalog":  filters[i].CatalogOrDefault(),
+			"schema":   filters[i].Schema,
+			"table":    filters[i].Table,
+			"column":   filters[i].Column,
+			"type":     filters[i].OpenFGA.Type,
+			"relation": filters[i].OpenFGA.RelationOrDefault(),
+			"numeric":  filters[i].IsNumeric(),
+		})
+	}
+	raw, err := json.Marshal(entries)
+	if err != nil {
+		// The map holds only strings and bools, so this cannot fail.
+		return "[]"
+	}
+	return string(raw)
 }
 
 func (r *DataPlatformReconciler) applyOPAService(ctx context.Context, dp *dataplatformv1alpha1.DataPlatform, ns string) error {
@@ -113,6 +167,7 @@ func (r *DataPlatformReconciler) applyOPADeployment(
 	dp *dataplatformv1alpha1.DataPlatform,
 	ns string,
 	oidc oidcConfig,
+	fga openfgaConfig,
 ) error {
 	lkURL := clusterServiceURL(nameLakekeeper, dp.Spec.Lakekeeper.NamespaceOrDefault(), lakekeeperPort)
 	deploy := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: nameOPA, Namespace: ns}}
@@ -137,7 +192,7 @@ func (r *DataPlatformReconciler) applyOPADeployment(
 				"--ignore", ".*",
 				"/policies",
 			},
-			Env: []corev1.EnvVar{
+			Env: append([]corev1.EnvVar{
 				{Name: "LAKEKEEPER_URL", Value: lkURL},
 				{Name: "LAKEKEEPER_TOKEN_ENDPOINT", Value: oidc.tokenURL},
 				{Name: "LAKEKEEPER_CLIENT_ID", Value: oidc.opaClientID},
@@ -154,7 +209,7 @@ func (r *DataPlatformReconciler) applyOPADeployment(
 				{Name: "TRINO_LAKEKEEPER_CATALOG_NAME", Value: nameLakekeeper},
 				{Name: "LAKEKEEPER_LAKEKEEPER_WAREHOUSE", Value: dp.Spec.Lakekeeper.Warehouse.NameOrDefault()},
 				{Name: "TRINO_ALLOW_UNMANAGED_CATALOGS", Value: "true"},
-			},
+			}, opaRowFilterEnv(dp, fga)...),
 			Ports: []corev1.ContainerPort{{Name: portNameHTTP, ContainerPort: opaPort}},
 			VolumeMounts: []corev1.VolumeMount{{
 				Name:      volumeConfig,

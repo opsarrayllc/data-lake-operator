@@ -36,9 +36,10 @@ import (
 )
 
 type fakeCatalog struct {
-	bootstraps int
-	warehouses []string
-	grants     []string
+	bootstraps  int
+	warehouses  []string
+	grants      []string
+	authzStores []AuthzStoreRequest
 }
 
 func (f *fakeCatalog) Bootstrap(_ context.Context, _, _ string, _ int32, _ string) error {
@@ -56,6 +57,11 @@ func (f *fakeCatalog) EnsureGrants(_ context.Context, _, _ string, _ int32, _ st
 func (f *fakeCatalog) EnsureWarehouse(_ context.Context, _, _ string, _ int32, _ string, req WarehouseRequest) error {
 	f.warehouses = append(f.warehouses, req.Name)
 	return nil
+}
+
+func (f *fakeCatalog) EnsureAuthzStore(_ context.Context, _, _ string, _ int32, _ string, req AuthzStoreRequest) (string, error) {
+	f.authzStores = append(f.authzStores, req)
+	return "01ABCDEF", nil
 }
 
 func (f *fakeCatalog) FormPost(_ context.Context, _, _ string, _ int32, _ string, _ url.Values) (int, []byte, error) {
@@ -349,6 +355,81 @@ var _ = Describe("DataPlatform Controller", func() {
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: secretTrinoCatalog, Namespace: nameTrino}, catalogSecret)).To(Succeed())
 		Expect(string(catalogSecret.Data[nameLakekeeper+".properties"])).To(ContainSubstring("s3.aws-access-key=test-access"))
 		Expect(string(catalogSecret.Data[nameLakekeeper+".properties"])).NotTo(ContainSubstring("s3.path-style-access=true"))
+	})
+
+	It("wires row filters through OpenFGA, OPA, and Trino", func() {
+		resource := &dataplatformv1alpha1.DataPlatform{}
+		Expect(k8sClient.Get(ctx, typeNamespacedName, resource)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+		Eventually(func() bool {
+			return errors.IsNotFound(k8sClient.Get(ctx, typeNamespacedName, resource))
+		}).Should(BeTrue())
+
+		filtered := &dataplatformv1alpha1.DataPlatform{
+			ObjectMeta: metav1.ObjectMeta{Name: resourceName},
+			Spec: dataplatformv1alpha1.DataPlatformSpec{
+				Authz: dataplatformv1alpha1.AuthzSpec{
+					RowFilters: []dataplatformv1alpha1.RowFilterSpec{{
+						Schema:  "sales",
+						Table:   "orders",
+						Column:  "region",
+						OpenFGA: dataplatformv1alpha1.RowFilterSubjectSpec{Type: "region"},
+					}},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, filtered)).To(Succeed())
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+		Expect(err).NotTo(HaveOccurred())
+		bringUpOpenFGA(ctx, reconciler, typeNamespacedName)
+
+		By("provisioning an OpenFGA store holding the filtered column's type")
+		Expect(catalog.authzStores).NotTo(BeEmpty())
+		Expect(catalog.authzStores[0].Store).To(Equal(dataplatformv1alpha1.DefaultRowFilterStore))
+		Expect(catalog.authzStores[0].Types).To(Equal([]AuthzType{
+			{Name: "region", Relations: []string{dataplatformv1alpha1.DefaultRowFilterRelation}},
+		}))
+		Expect(k8sClient.Get(ctx, typeNamespacedName, resource)).To(Succeed())
+		Expect(resource.Status.RowFilterStoreID).To(Equal("01ABCDEF"))
+
+		By("giving OPA the store and the filters")
+		deploy := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameOPA, Namespace: nameOpenFGA}, deploy)).To(Succeed())
+		env := deploy.Spec.Template.Spec.Containers[0].Env
+		Expect(envValue(env, "OPENFGA_URL")).To(Equal("http://openfga.openfga.svc:8080"))
+		Expect(envValue(env, "OPENFGA_STORE_ID")).To(Equal("01ABCDEF"))
+		Expect(envValue(env, "TRINO_ROW_FILTERS")).To(ContainSubstring(`"column":"region"`))
+		Expect(envValue(env, "TRINO_ROW_FILTERS")).To(ContainSubstring(`"catalog":"lakekeeper"`))
+
+		By("shipping the row filter policy alongside the vendored bridge")
+		policies := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: configMapOPAPolicies, Namespace: nameOpenFGA}, policies)).To(Succeed())
+		Expect(policies.Data).To(HaveKey("trino-row_filters.rego"))
+		Expect(policies.Data).To(HaveKey("rowfilters-configuration.rego"))
+		Expect(policies.Data).To(HaveKey("trino-main.rego"))
+
+		By("pointing Trino at the row filter endpoint")
+		cfg := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: secretTrinoConfig, Namespace: nameTrino}, cfg)).To(Succeed())
+		Expect(string(cfg.Data["access-control.properties"])).To(
+			ContainSubstring("opa.policy.row-filters-uri=http://opa.openfga.svc:8181/v1/data/trino/row_filters"))
+	})
+
+	It("leaves row filtering off when no filter is configured", func() {
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+		Expect(err).NotTo(HaveOccurred())
+		bringUpOpenFGA(ctx, reconciler, typeNamespacedName)
+
+		Expect(catalog.authzStores).To(BeEmpty())
+
+		deploy := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameOPA, Namespace: nameOpenFGA}, deploy)).To(Succeed())
+		Expect(envValue(deploy.Spec.Template.Spec.Containers[0].Env, "OPENFGA_STORE_ID")).To(BeEmpty())
+
+		cfg := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: secretTrinoConfig, Namespace: nameTrino}, cfg)).To(Succeed())
+		Expect(string(cfg.Data["access-control.properties"])).NotTo(ContainSubstring("row-filters-uri"))
 	})
 
 	It("uses an external OIDC issuer when auth.embedded is false", func() {

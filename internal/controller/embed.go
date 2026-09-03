@@ -18,5 +18,12 @@ package controller
 
 import "embed"
 
-//go:embed embed/opapolicies/*.rego
+// opaPolicyFS holds LakeKeeper's vendored OPA bridge alongside the operator's
+// own policies. Both directories are flattened into one OPA bundle, so they can
+// share the `trino` package.
+//
+//go:embed embed/opapolicies/*.rego embed/rowfilters/*.rego
 var opaPolicyFS embed.FS
+
+// opaPolicyDirs are the embedded directories loaded into OPA, in order.
+var opaPolicyDirs = []string{"embed/opapolicies", "embed/rowfilters"}

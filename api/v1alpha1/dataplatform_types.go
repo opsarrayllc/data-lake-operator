@@ -54,21 +54,31 @@ const (
 	DefaultOpenFGAImage        = "openfga/openfga:v1.8.12"
 	DefaultOPAImage            = "openpolicyagent/opa:1.10.1"
 	DefaultOpenFGAStore        = "lakekeeper"
-	DefaultWarehouseName       = "default"
-	DefaultPostgresStorage     = "10Gi"
-	DefaultMinioStorage        = "20Gi"
-	DefaultMinioBucket         = "warehouse"
-	DefaultS3Flavor            = "aws"
-	DefaultS3CompatFlavor      = "s3-compat"
-	DefaultS3CompatRegion      = "us-east-1"
-	DefaultOIDCRealm           = "dataplatform"
-	DefaultOIDCAudience        = "lakekeeper"
-	DefaultOIDCClientID        = "lakekeeper"
-	DefaultOIDCTrinoClientID   = "trino"
-	DefaultOIDCOpaClientID     = "opa"
-	DefaultOIDCOperatorClient  = "operator"
-	DefaultOIDCScope           = "lakekeeper"
-	DefaultOIDCAdminUser       = "admin"
+	// DefaultTrinoCatalog is the Trino catalog the operator points at the
+	// managed LakeKeeper warehouse.
+	DefaultTrinoCatalog = "lakekeeper"
+	// DefaultRowFilterStore is a second OpenFGA store, separate from the one
+	// LakeKeeper owns. LakeKeeper migrates its own authorization model, so the
+	// row-filter types cannot live alongside it.
+	DefaultRowFilterStore = "rowfilters"
+	// DefaultRowFilterRelation is the OpenFGA relation a user must hold on a
+	// value object for that value to pass the row filter.
+	DefaultRowFilterRelation  = "viewer"
+	DefaultWarehouseName      = "default"
+	DefaultPostgresStorage    = "10Gi"
+	DefaultMinioStorage       = "20Gi"
+	DefaultMinioBucket        = "warehouse"
+	DefaultS3Flavor           = "aws"
+	DefaultS3CompatFlavor     = "s3-compat"
+	DefaultS3CompatRegion     = "us-east-1"
+	DefaultOIDCRealm          = "dataplatform"
+	DefaultOIDCAudience       = "lakekeeper"
+	DefaultOIDCClientID       = "lakekeeper"
+	DefaultOIDCTrinoClientID  = "trino"
+	DefaultOIDCOpaClientID    = "opa"
+	DefaultOIDCOperatorClient = "operator"
+	DefaultOIDCScope          = "lakekeeper"
+	DefaultOIDCAdminUser      = "admin"
 	// DefaultOIDCAdminUserID is imported as the Keycloak user id for the local
 	// admin, which makes the OIDC subject predictable. The operator needs to know
 	// it up front to grant that user LakeKeeper's admin role after bootstrap.
@@ -223,6 +233,73 @@ type AuthzSpec struct {
 	// openfga configures the operator-managed OpenFGA instance and the OPA bridge.
 	// +optional
 	OpenFGA OpenFGASpec `json:"openfga"`
+
+	// rowFilters restrict which rows each user sees in Trino. LakeKeeper grants
+	// access to whole tables; these entries narrow a granted table down to the
+	// rows whose key column holds a value the user may see.
+	//
+	// Each entry pins one table to one column, and names the OpenFGA object type
+	// whose members are that column's permitted values. The operator provisions
+	// the types in a dedicated OpenFGA store; write the user-to-value tuples
+	// yourself, for example "user:alice viewer region:emea".
+	//
+	// Requires Trino and authz to be enabled. A table with no reachable
+	// permitted values returns no rows.
+	// +optional
+	// +listType=atomic
+	RowFilters []RowFilterSpec `json:"rowFilters,omitempty"`
+}
+
+// RowFilterSpec restricts one Trino table to the rows a user is allowed to see.
+type RowFilterSpec struct {
+	// catalog is the Trino catalog holding the table. Defaults to "lakekeeper",
+	// the catalog the operator creates for the managed warehouse.
+	// +optional
+	Catalog string `json:"catalog,omitempty"`
+
+	// schema is the Trino schema, which is a LakeKeeper namespace.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Schema string `json:"schema"`
+
+	// table is the table to filter.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Table string `json:"table"`
+
+	// column is the column whose value decides whether a row is visible. It is
+	// emitted as a quoted identifier, so it must match the column's case as
+	// stored in the table, which Iceberg normally lowercases.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern="^[A-Za-z_][A-Za-z0-9_]*$"
+	Column string `json:"column"`
+
+	// openfga names the object type and relation that hold the permitted values.
+	// +kubebuilder:validation:Required
+	OpenFGA RowFilterSubjectSpec `json:"openfga"`
+
+	// numeric compares the column against unquoted SQL literals, for integer
+	// and decimal columns. Defaults to false, which emits quoted strings.
+	// Non-numeric values are dropped from a numeric filter.
+	// +optional
+	Numeric *bool `json:"numeric,omitempty"`
+}
+
+// RowFilterSubjectSpec points at the OpenFGA type whose objects are the values
+// a user may see in the filtered column.
+type RowFilterSubjectSpec struct {
+	// type is the OpenFGA object type. Object ids under this type are matched
+	// against the column, so "region:emea" permits the value "emea".
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern="^[a-zA-Z0-9_][a-zA-Z0-9_-]*$"
+	Type string `json:"type"`
+
+	// relation is the relation a user must hold on a value object. Defaults to
+	// "viewer". The operator defines it as assignable to users and to group
+	// members, so tuples may target "user:alice" or "group:analysts#member".
+	// +optional
+	// +kubebuilder:validation:Pattern="^[a-zA-Z0-9_][a-zA-Z0-9_-]*$"
+	Relation string `json:"relation,omitempty"`
 }
 
 // OpenFGASpec configures operator-managed OpenFGA (and the OPA sidecar used by Trino).
@@ -242,6 +319,12 @@ type OpenFGASpec struct {
 	// store is the OpenFGA store name LakeKeeper uses. Defaults to "lakekeeper".
 	// +optional
 	Store string `json:"store,omitempty"`
+
+	// rowFilterStore is the OpenFGA store holding row-filter tuples. Defaults to
+	// "rowfilters". It is deliberately separate from store, because LakeKeeper
+	// migrates the authorization model in its own store.
+	// +optional
+	RowFilterStore string `json:"rowFilterStore,omitempty"`
 
 	// postgres is OpenFGA's metadata database.
 	// +optional
@@ -567,6 +650,11 @@ type DataPlatformStatus struct {
 	// openfgaEndpoint is the in-cluster gRPC URL of OpenFGA when it is embedded.
 	// +optional
 	OpenFGAEndpoint string `json:"openfgaEndpoint,omitempty"`
+
+	// rowFilterStoreID is the OpenFGA store id the operator provisioned for row
+	// filters. Use it when writing tuples against the OpenFGA API.
+	// +optional
+	RowFilterStoreID string `json:"rowFilterStoreID,omitempty"`
 }
 
 // +kubebuilder:object:root=true
