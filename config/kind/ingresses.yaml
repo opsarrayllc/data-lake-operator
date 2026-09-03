@@ -55,6 +55,77 @@ spec:
             port:
               number: 8181
 ---
+# OpenFGA's HTTP API. Every call needs the preshared key:
+#   Authorization: Bearer $(kubectl get secret openfga -n openfga \
+#     -o jsonpath='{.data.apiKey}' | base64 -d)
+# The gRPC port LakeKeeper uses is deliberately not exposed.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: openfga
+  namespace: openfga
+  annotations:
+    nginx.ingress.kubernetes.io/backend-protocol: HTTP
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - openfga.data-platform.local
+    secretName: data-platform-tls
+  rules:
+  - host: openfga.data-platform.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: openfga
+            port:
+              number: 8080
+---
+# OPA, for replaying Trino authorization decisions by hand:
+#   curl -sk https://opa.data-platform.local/v1/data/trino/allow -d @input.json
+#
+# OPA's API is unauthenticated and its default configuration accepts policy
+# writes, so a full proxy would let anything that reaches this host PUT a
+# `package trino` module that allows every query. Only the decision and health
+# paths are routed; /v1/policies is left unreachable. Use
+# `kubectl -n openfga port-forward svc/opa 8181:8181` for the rest of the API.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: opa
+  namespace: openfga
+  annotations:
+    nginx.ingress.kubernetes.io/backend-protocol: HTTP
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - opa.data-platform.local
+    secretName: data-platform-tls
+  rules:
+  - host: opa.data-platform.local
+    http:
+      paths:
+      - path: /v1/data/trino
+        pathType: Prefix
+        backend:
+          service:
+            name: opa
+            port:
+              number: 8181
+      - path: /health
+        pathType: Prefix
+        backend:
+          service:
+            name: opa
+            port:
+              number: 8181
+---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

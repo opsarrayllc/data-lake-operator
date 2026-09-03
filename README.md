@@ -1,4 +1,4 @@
-# Data Lake Operator
+# Data Platform Operator
 
 Kubernetes operator that deploys the resources needed to bootstrap a data platform.
 

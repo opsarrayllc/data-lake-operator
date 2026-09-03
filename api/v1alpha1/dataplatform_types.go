@@ -37,17 +37,23 @@ const (
 	ConditionMinioReady = "MinioReady"
 	// ConditionAuthReady is True when the identity provider is usable, or when auth is disabled.
 	ConditionAuthReady = "AuthReady"
+	// ConditionOpenFGAReady is True when OpenFGA is usable, or when authorization is disabled.
+	ConditionOpenFGAReady = "OpenFGAReady"
 
 	DefaultLakekeeperNamespace = "lakekeeper"
 	DefaultTrinoNamespace      = "trino"
 	DefaultMinioNamespace      = "minio"
 	DefaultKeycloakNamespace   = "keycloak"
+	DefaultOpenFGANamespace    = "openfga"
 	DefaultLakekeeperImage     = "quay.io/lakekeeper/catalog:v0.13.3"
 	DefaultTrinoImage          = "trinodb/trino:476"
 	DefaultPostgresImage       = "postgres:17"
 	DefaultMinioImage          = "minio/minio:RELEASE.2025-04-22T22-12-26Z"
 	DefaultMcImage             = "minio/mc:RELEASE.2025-04-16T18-13-26Z"
 	DefaultKeycloakImage       = "quay.io/keycloak/keycloak:26.3.3"
+	DefaultOpenFGAImage        = "openfga/openfga:v1.8.12"
+	DefaultOPAImage            = "openpolicyagent/opa:1.10.1"
+	DefaultOpenFGAStore        = "lakekeeper"
 	DefaultWarehouseName       = "default"
 	DefaultPostgresStorage     = "10Gi"
 	DefaultMinioStorage        = "20Gi"
@@ -59,9 +65,14 @@ const (
 	DefaultOIDCAudience        = "lakekeeper"
 	DefaultOIDCClientID        = "lakekeeper"
 	DefaultOIDCTrinoClientID   = "trino"
+	DefaultOIDCOpaClientID     = "opa"
 	DefaultOIDCOperatorClient  = "operator"
 	DefaultOIDCScope           = "lakekeeper"
 	DefaultOIDCAdminUser       = "admin"
+	// DefaultOIDCAdminUserID is imported as the Keycloak user id for the local
+	// admin, which makes the OIDC subject predictable. The operator needs to know
+	// it up front to grant that user LakeKeeper's admin role after bootstrap.
+	DefaultOIDCAdminUserID = "00000000-0000-4000-8000-000000000001"
 )
 
 // DataPlatformSpec defines the desired state of DataPlatform.
@@ -76,6 +87,11 @@ type DataPlatformSpec struct {
 	// +optional
 	Auth AuthSpec `json:"auth"`
 
+	// authz configures fine-grained authorization. By default the operator deploys
+	// OpenFGA and an OPA bridge so Trino enforces LakeKeeper permissions.
+	// +optional
+	Authz AuthzSpec `json:"authz"`
+
 	// lakekeeper configures the Iceberg REST catalog.
 	// +optional
 	Lakekeeper LakekeeperSpec `json:"lakekeeper"`
@@ -89,8 +105,8 @@ type DataPlatformSpec struct {
 // By default the operator deploys Keycloak. Set embedded to false and fill oidc
 // to use an existing provider such as Okta or JumpCloud.
 type AuthSpec struct {
-	// enabled turns on OIDC for LakeKeeper, the Trino Iceberg catalog, and the
-	// Trino Web UI when spec.trino.publicURL is set.
+	// enabled turns on OIDC for LakeKeeper, OpenFGA clients, the Trino Iceberg
+	// catalog, and the Trino Web UI when spec.trino.publicURL is set.
 	// Defaults to true.
 	// +optional
 	Enabled *bool `json:"enabled,omitempty"`
@@ -189,6 +205,51 @@ type OIDCCredentialsSecretRef struct {
 	// trinoClientSecretKey, if set, uses a separate secret for the Trino client.
 	// +optional
 	TrinoClientSecretKey string `json:"trinoClientSecretKey,omitempty"`
+}
+
+// AuthzSpec configures LakeKeeper authorization and the Trino OPA bridge.
+// By default the operator deploys OpenFGA. Set enabled to false to use
+// LakeKeeper's allowall authorizer (authenticated users can do anything).
+type AuthzSpec struct {
+	// enabled deploys OpenFGA and uses it as LakeKeeper's authorizer.
+	// Defaults to true.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// embedded deploys OpenFGA in its own namespace. Defaults to true when authz is enabled.
+	// +optional
+	Embedded *bool `json:"embedded,omitempty"`
+
+	// openfga configures the operator-managed OpenFGA instance and the OPA bridge.
+	// +optional
+	OpenFGA OpenFGASpec `json:"openfga"`
+}
+
+// OpenFGASpec configures operator-managed OpenFGA (and the OPA sidecar used by Trino).
+type OpenFGASpec struct {
+	// namespace defaults to "openfga". Use a unique value if you create multiple DataPlatforms.
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+
+	// image is the OpenFGA container image.
+	// +optional
+	Image string `json:"image,omitempty"`
+
+	// opaImage is the Open Policy Agent image that translates Trino checks to LakeKeeper.
+	// +optional
+	OPAImage string `json:"opaImage,omitempty"`
+
+	// store is the OpenFGA store name LakeKeeper uses. Defaults to "lakekeeper".
+	// +optional
+	Store string `json:"store,omitempty"`
+
+	// postgres is OpenFGA's metadata database.
+	// +optional
+	Postgres PostgresSpec `json:"postgres"`
+
+	// resources are compute resource requirements for the OpenFGA container.
+	// +optional
+	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
 // StorageSpec configures table data storage.
@@ -475,6 +536,7 @@ type DataPlatformStatus struct {
 	// - "Ready": every enabled component is fully functional
 	// - "MinioReady": in-cluster MinIO is ready, or an external object store is configured
 	// - "AuthReady": Keycloak is ready, an external OIDC issuer is configured, or auth is disabled
+	// - "OpenFGAReady": OpenFGA is ready, or authorization is disabled
 	// - "PostgresReady": the catalog database is usable
 	// - "LakekeeperReady": the catalog Deployment is ready
 	// - "WarehouseReady": the Iceberg warehouse has been created
@@ -501,6 +563,10 @@ type DataPlatformStatus struct {
 	// keycloakEndpoint is the in-cluster HTTP URL of Keycloak when it is embedded.
 	// +optional
 	KeycloakEndpoint string `json:"keycloakEndpoint,omitempty"`
+
+	// openfgaEndpoint is the in-cluster gRPC URL of OpenFGA when it is embedded.
+	// +optional
+	OpenFGAEndpoint string `json:"openfgaEndpoint,omitempty"`
 }
 
 // +kubebuilder:object:root=true

@@ -69,13 +69,13 @@ func (r *DataPlatformReconciler) reconcile(ctx context.Context, dp *dataplatform
 	log := logf.FromContext(ctx)
 	log.Info("Reconciling DataPlatform")
 
-	progressing, store, oidc, err := r.reconcileLakekeeperStack(ctx, dp)
+	progressing, store, oidc, fga, err := r.reconcileLakekeeperStack(ctx, dp)
 	if err != nil {
 		setCondition(dp, dataplatformv1alpha1.ConditionReady, metav1.ConditionFalse, reasonError, err.Error())
 		return ctrl.Result{}, err
 	}
 
-	trinoProgressing, err := r.reconcileTrinoStack(ctx, dp, store, oidc)
+	trinoProgressing, err := r.reconcileTrinoStack(ctx, dp, store, oidc, fga)
 	if err != nil {
 		setCondition(dp, dataplatformv1alpha1.ConditionReady, metav1.ConditionFalse, reasonError, err.Error())
 		return ctrl.Result{}, err
@@ -91,60 +91,69 @@ func (r *DataPlatformReconciler) reconcile(ctx context.Context, dp *dataplatform
 	return ctrl.Result{}, nil
 }
 
-func (r *DataPlatformReconciler) reconcileLakekeeperStack(ctx context.Context, dp *dataplatformv1alpha1.DataPlatform) (bool, objectStore, oidcConfig, error) {
+func (r *DataPlatformReconciler) reconcileLakekeeperStack(ctx context.Context, dp *dataplatformv1alpha1.DataPlatform) (bool, objectStore, oidcConfig, openfgaConfig, error) {
 	if !dp.Spec.Lakekeeper.IsEnabled() {
 		setCondition(dp, dataplatformv1alpha1.ConditionMinioReady, metav1.ConditionTrue, reasonDisabled, "LakeKeeper is disabled")
 		setCondition(dp, dataplatformv1alpha1.ConditionPostgresReady, metav1.ConditionTrue, reasonDisabled, "LakeKeeper is disabled")
 		setCondition(dp, dataplatformv1alpha1.ConditionLakekeeperReady, metav1.ConditionTrue, reasonDisabled, "LakeKeeper is disabled")
 		setCondition(dp, dataplatformv1alpha1.ConditionWarehouseReady, metav1.ConditionTrue, reasonDisabled, "LakeKeeper is disabled")
+		setCondition(dp, dataplatformv1alpha1.ConditionOpenFGAReady, metav1.ConditionTrue, reasonDisabled, "LakeKeeper is disabled")
 		if !dp.Spec.Auth.IsEnabled() {
 			setCondition(dp, dataplatformv1alpha1.ConditionAuthReady, metav1.ConditionTrue, reasonDisabled, "LakeKeeper is disabled")
 		}
-		return false, objectStore{}, oidcConfig{}, nil
+		return false, objectStore{}, oidcConfig{}, openfgaConfig{}, nil
 	}
 
 	ns := dp.Spec.Lakekeeper.NamespaceOrDefault()
 	if err := r.ensureNamespace(ctx, dp, ns, componentLakekeeper); err != nil {
-		return false, objectStore{}, oidcConfig{}, err
+		return false, objectStore{}, oidcConfig{}, openfgaConfig{}, err
 	}
 
 	conn, err := r.reconcilePostgres(ctx, dp)
 	if err != nil {
-		return false, objectStore{}, oidcConfig{}, err
+		return false, objectStore{}, oidcConfig{}, openfgaConfig{}, err
 	}
 
 	store, storeReady, err := r.reconcileObjectStore(ctx, dp)
 	if err != nil {
-		return false, objectStore{}, oidcConfig{}, err
+		return false, objectStore{}, oidcConfig{}, openfgaConfig{}, err
 	}
 
 	oidc, authReady, err := r.reconcileAuth(ctx, dp)
 	if err != nil {
-		return false, store, oidc, err
+		return false, store, oidc, openfgaConfig{}, err
 	}
 
-	if authReady {
-		if err := r.reconcileLakekeeper(ctx, dp, conn, oidc); err != nil {
-			return false, store, oidc, err
+	fga, fgaReady, err := r.reconcileAuthz(ctx, dp)
+	if err != nil {
+		return false, store, oidc, fga, err
+	}
+
+	if authReady && fgaReady {
+		if err := r.reconcileLakekeeper(ctx, dp, conn, oidc, fga); err != nil {
+			return false, store, oidc, fga, err
 		}
-	} else {
+	} else if !authReady {
 		setCondition(dp, dataplatformv1alpha1.ConditionLakekeeperReady, metav1.ConditionFalse, reasonNotReady, "Waiting for identity provider")
+	} else {
+		setCondition(dp, dataplatformv1alpha1.ConditionLakekeeperReady, metav1.ConditionFalse, reasonNotReady, "Waiting for OpenFGA")
 	}
 
 	progressing := !conditionTrue(dp, dataplatformv1alpha1.ConditionPostgresReady) ||
 		!conditionTrue(dp, dataplatformv1alpha1.ConditionLakekeeperReady) ||
 		!authReady ||
+		!fgaReady ||
 		!storeReady
 	if progressing {
-		return true, store, oidc, nil
+		return true, store, oidc, fga, nil
 	}
 	if err := r.reconcileWarehouse(ctx, dp, store, oidc); err != nil {
-		return false, store, oidc, err
+		return false, store, oidc, fga, err
 	}
-	return !conditionTrue(dp, dataplatformv1alpha1.ConditionWarehouseReady), store, oidc, nil
+	return !conditionTrue(dp, dataplatformv1alpha1.ConditionWarehouseReady), store, oidc, fga, nil
 }
 
-func (r *DataPlatformReconciler) reconcileTrinoStack(ctx context.Context, dp *dataplatformv1alpha1.DataPlatform, store objectStore, oidc oidcConfig) (bool, error) {
+func (r *DataPlatformReconciler) reconcileTrinoStack(ctx context.Context, dp *dataplatformv1alpha1.DataPlatform, store objectStore, oidc oidcConfig, fga openfgaConfig) (bool, error) {
 	if !dp.Spec.Trino.IsEnabled() {
 		setCondition(dp, dataplatformv1alpha1.ConditionTrinoReady, metav1.ConditionTrue, reasonDisabled, "Trino is disabled")
 		return false, nil
@@ -154,7 +163,10 @@ func (r *DataPlatformReconciler) reconcileTrinoStack(ctx context.Context, dp *da
 	if err := r.ensureNamespace(ctx, dp, ns, componentTrinoCoordinator); err != nil {
 		return false, err
 	}
-	if err := r.reconcileTrino(ctx, dp, store, oidc); err != nil {
+	if _, err := r.reconcileOPA(ctx, dp, oidc, fga); err != nil {
+		return false, err
+	}
+	if err := r.reconcileTrino(ctx, dp, store, oidc, fga); err != nil {
 		return false, err
 	}
 	return !conditionTrue(dp, dataplatformv1alpha1.ConditionTrinoReady), nil

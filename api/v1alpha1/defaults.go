@@ -194,6 +194,36 @@ func (s *KeycloakSpec) RealmOrDefault() string {
 	return stringOrDefault(s.Realm, DefaultOIDCRealm)
 }
 
+// IsEnabled reports whether OpenFGA should be used. Nil defaults to true.
+func (s *AuthzSpec) IsEnabled() bool {
+	return boolDefaultTrue(s.Enabled)
+}
+
+// IsEmbedded reports whether OpenFGA should be operator-managed. Nil defaults to true.
+func (s *AuthzSpec) IsEmbedded() bool {
+	return boolDefaultTrue(s.Embedded)
+}
+
+// NamespaceOrDefault returns the OpenFGA namespace.
+func (s *OpenFGASpec) NamespaceOrDefault() string {
+	return stringOrDefault(s.Namespace, DefaultOpenFGANamespace)
+}
+
+// ImageOrDefault returns the OpenFGA image.
+func (s *OpenFGASpec) ImageOrDefault() string {
+	return stringOrDefault(s.Image, DefaultOpenFGAImage)
+}
+
+// OPAImageOrDefault returns the OPA image.
+func (s *OpenFGASpec) OPAImageOrDefault() string {
+	return stringOrDefault(s.OPAImage, DefaultOPAImage)
+}
+
+// StoreOrDefault returns the OpenFGA store name.
+func (s *OpenFGASpec) StoreOrDefault() string {
+	return stringOrDefault(s.Store, DefaultOpenFGAStore)
+}
+
 // AudienceOrDefault returns the expected JWT audience.
 func (s *OIDCSpec) AudienceOrDefault() string {
 	return stringOrDefault(s.Audience, DefaultOIDCAudience)

@@ -37,13 +37,23 @@ type oidcConfig struct {
 	uiClientID       string
 	trinoClientID    string
 	trinoSecret      string
+	opaClientID      string
+	opaSecret        string
 	operatorClientID string
 	operatorSecret   string
-	tokenURL         string
-	proxyNamespace   string
-	proxyService     string
-	proxyPort        int32
-	proxyTokenPath   string
+	// adminSubject is the OIDC subject of the human admin the operator manages,
+	// empty for external issuers where the operator does not own the user list.
+	adminSubject string
+	adminName    string
+	adminEmail   string
+	// opaSubject is the OIDC subject of the OPA bridge's service account, which
+	// needs its own grant to inspect other users' permissions.
+	opaSubject     string
+	tokenURL       string
+	proxyNamespace string
+	proxyService   string
+	proxyPort      int32
+	proxyTokenPath string
 }
 
 func (r *DataPlatformReconciler) reconcileAuth(ctx context.Context, dp *dataplatformv1alpha1.DataPlatform) (oidcConfig, bool, error) {
@@ -117,6 +127,8 @@ func (r *DataPlatformReconciler) externalOIDC(ctx context.Context, dp *dataplatf
 		uiClientID:       clientID,
 		trinoClientID:    trinoID,
 		trinoSecret:      trinoSecret,
+		opaClientID:      trinoID,
+		opaSecret:        trinoSecret,
 		operatorClientID: clientID,
 		operatorSecret:   clientSecret,
 		tokenURL:         spec.TokenEndpointOrDefault(),

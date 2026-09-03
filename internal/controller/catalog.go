@@ -43,9 +43,26 @@ import (
 // through the Kubernetes API service proxy (used for Keycloak token requests).
 type CatalogClient interface {
 	Bootstrap(ctx context.Context, namespace, service string, port int32, bearer string) error
+	EnsureGrants(ctx context.Context, namespace, service string, port int32, bearer string, principals []CatalogPrincipal) error
 	EnsureWarehouse(ctx context.Context, namespace, service string, port int32, bearer string, req WarehouseRequest) error
 	FormPost(ctx context.Context, namespace, service string, port int32, path string, form url.Values) (int, []byte, error)
 	FetchToken(ctx context.Context, tokenURL string, form url.Values) (int, []byte, error)
+}
+
+// CatalogPrincipal is an identity the operator provisions and grants access to
+// after bootstrap. Bootstrap only grants the operator that performed it, so
+// every other principal needs explicit grants.
+type CatalogPrincipal struct {
+	Subject string
+	Name    string
+	Email   string
+	// Type is LakeKeeper's user-type, "human" or "application".
+	Type string
+	// ServerRelation is granted on the server when set, e.g. "admin".
+	ServerRelation string
+	// ProjectRelation is granted on the default project when set, e.g.
+	// "project_admin". The server admin role does not imply project access.
+	ProjectRelation string
 }
 
 // WarehouseRequest is a LakeKeeper create-warehouse payload.
@@ -88,8 +105,11 @@ func NewProxyCatalogClient(cfg *rest.Config) (CatalogClient, error) {
 }
 
 func (c *proxyCatalogClient) Bootstrap(ctx context.Context, namespace, service string, port int32, bearer string) error {
+	// is-operator grants the full management API. The plain admin role a
+	// bootstrap otherwise grants cannot create warehouses in a project until it
+	// grants itself project permissions, which fails under the OpenFGA authorizer.
 	status, body, err := c.do(ctx, http.MethodPost, namespace, service, port, "management/v1/bootstrap", bearer,
-		map[string]any{"accept-terms-of-use": true})
+		map[string]any{"accept-terms-of-use": true, "is-operator": true})
 	if err != nil {
 		return err
 	}
@@ -97,6 +117,70 @@ func (c *proxyCatalogClient) Bootstrap(ctx context.Context, namespace, service s
 		return nil
 	}
 	return fmt.Errorf("bootstrap returned %d: %s", status, truncate(body))
+}
+
+// EnsureGrants provisions each principal and applies its grants.
+func (c *proxyCatalogClient) EnsureGrants(
+	ctx context.Context,
+	namespace, service string,
+	port int32,
+	bearer string,
+	principals []CatalogPrincipal,
+) error {
+	for _, p := range principals {
+		user := map[string]any{
+			"id":               p.Subject,
+			"name":             p.Name,
+			"user-type":        p.Type,
+			"update-if-exists": true,
+		}
+		if p.Email != "" {
+			user["email"] = p.Email
+		}
+		if err := c.post(ctx, namespace, service, port,
+			"management/v1/user", bearer, user, "provision user "+p.Name); err != nil {
+			return err
+		}
+		if p.ServerRelation != "" {
+			grant := map[string]any{
+				"writes": []map[string]any{{"type": p.ServerRelation, "user": p.Subject}},
+			}
+			if err := c.post(ctx, namespace, service, port,
+				"management/v1/permissions/server/assignments", bearer, grant,
+				"grant server "+p.ServerRelation+" to "+p.Name); err != nil {
+				return err
+			}
+		}
+		if p.ProjectRelation != "" {
+			grant := map[string]any{
+				"writes": []map[string]any{{"type": p.ProjectRelation, "user": p.Subject}},
+			}
+			if err := c.post(ctx, namespace, service, port,
+				"management/v1/permissions/project/assignments", bearer, grant,
+				"grant project "+p.ProjectRelation+" to "+p.Name); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (c *proxyCatalogClient) post(
+	ctx context.Context,
+	namespace, service string,
+	port int32,
+	path, bearer string,
+	payload any,
+	what string,
+) error {
+	status, body, err := c.do(ctx, http.MethodPost, namespace, service, port, path, bearer, payload)
+	if err != nil {
+		return err
+	}
+	if isSuccess(status) || isAlreadyDone(status, body) {
+		return nil
+	}
+	return fmt.Errorf("%s returned %d: %s", what, status, truncate(body))
 }
 
 func (c *proxyCatalogClient) EnsureWarehouse(ctx context.Context, namespace, service string, port int32, bearer string, req WarehouseRequest) error {

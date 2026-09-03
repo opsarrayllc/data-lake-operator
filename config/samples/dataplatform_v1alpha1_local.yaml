@@ -16,6 +16,12 @@ spec:
     keycloak:
       namespace: keycloak
       publicURL: https://keycloak.data-platform.local
+  authz:
+    embedded: true
+    openfga:
+      namespace: openfga
+      postgres:
+        storageSize: 1Gi
   storage:
     embedded: true
     minio:

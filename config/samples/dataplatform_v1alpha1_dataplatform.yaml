@@ -42,6 +42,17 @@ spec:
     #   credentialsSecretRef:
     #     name: oidc-credentials
     #     namespace: lakekeeper
+  # Authorization. OpenFGA is deployed by default and Trino enforces
+  # LakeKeeper permissions through an OPA bridge.
+  authz:
+    embedded: true
+    openfga:
+      # namespace: openfga
+      # store: lakekeeper
+      postgres:
+        embedded: true
+        # storageSize: 10Gi
+    # enabled: false   # use LakeKeeper allowall instead
   # Iceberg REST catalog. Namespace defaults to "lakekeeper".
   # Use a unique namespace if you create more than one DataPlatform.
   lakekeeper:

@@ -37,6 +37,7 @@ func (r *DataPlatformReconciler) reconcileLakekeeper(
 	dp *dataplatformv1alpha1.DataPlatform,
 	conn postgresConn,
 	oidc oidcConfig,
+	fga openfgaConfig,
 ) error {
 	ns := dp.Spec.Lakekeeper.NamespaceOrDefault()
 	dp.Status.LakekeeperEndpoint = clusterServiceURL(nameLakekeeper, ns, lakekeeperPort)
@@ -49,7 +50,7 @@ func (r *DataPlatformReconciler) reconcileLakekeeper(
 		setCondition(dp, dataplatformv1alpha1.ConditionLakekeeperReady, metav1.ConditionFalse, reasonError, err.Error())
 		return err
 	}
-	if err := r.applyLakekeeperDeployment(ctx, dp, ns, conn, oidc); err != nil {
+	if err := r.applyLakekeeperDeployment(ctx, dp, ns, conn, oidc, fga); err != nil {
 		setCondition(dp, dataplatformv1alpha1.ConditionLakekeeperReady, metav1.ConditionFalse, reasonError, err.Error())
 		return err
 	}
@@ -111,11 +112,12 @@ func (r *DataPlatformReconciler) applyLakekeeperDeployment(
 	ns string,
 	conn postgresConn,
 	oidc oidcConfig,
+	fga openfgaConfig,
 ) error {
 	spec := dp.Spec.Lakekeeper
 	deploy := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: nameLakekeeper, Namespace: ns}}
 	labels := labelsFor(dp, componentLakekeeper)
-	env := lakekeeperEnv(dp, conn, oidc)
+	env := lakekeeperEnv(dp, conn, oidc, fga)
 	env = append(env, spec.ExtraEnv...)
 
 	pgWait := fmt.Sprintf(
@@ -165,7 +167,7 @@ func (r *DataPlatformReconciler) applyLakekeeperDeployment(
 	})
 }
 
-func lakekeeperEnv(dp *dataplatformv1alpha1.DataPlatform, conn postgresConn, oidc oidcConfig) []corev1.EnvVar {
+func lakekeeperEnv(dp *dataplatformv1alpha1.DataPlatform, conn postgresConn, oidc oidcConfig, fga openfgaConfig) []corev1.EnvVar {
 	env := []corev1.EnvVar{
 		{
 			Name: keyEncryption,
@@ -188,13 +190,25 @@ func lakekeeperEnv(dp *dataplatformv1alpha1.DataPlatform, conn postgresConn, oid
 	if conn.SSLMode != "" {
 		env = append(env, corev1.EnvVar{Name: "LAKEKEEPER__PG_SSL_MODE", Value: conn.SSLMode})
 	}
+	if fga.enabled {
+		env = append(env,
+			corev1.EnvVar{Name: "LAKEKEEPER__AUTHZ_BACKEND", Value: "openfga"},
+			corev1.EnvVar{Name: "LAKEKEEPER__OPENFGA__ENDPOINT", Value: fga.endpoint},
+			corev1.EnvVar{Name: "LAKEKEEPER__OPENFGA__STORE_NAME", Value: fga.store},
+			corev1.EnvVar{Name: "LAKEKEEPER__OPENFGA__API_KEY", Value: fga.apiKey},
+		)
+		if oidc.enabled {
+			env = append(env, lakekeeperTrustedEngineEnv(oidc)...)
+		}
+	} else if oidc.enabled {
+		env = append(env, corev1.EnvVar{Name: "LAKEKEEPER__AUTHZ_BACKEND", Value: "allowall"})
+	}
 	if oidc.enabled {
 		env = append(env,
 			corev1.EnvVar{Name: "LAKEKEEPER__OPENID_PROVIDER_URI", Value: oidc.issuer},
 			corev1.EnvVar{Name: "LAKEKEEPER__OPENID_AUDIENCE", Value: oidc.audience},
 			corev1.EnvVar{Name: "LAKEKEEPER__UI__OPENID_CLIENT_ID", Value: oidc.uiClientID},
 			corev1.EnvVar{Name: "LAKEKEEPER__UI__OPENID_SCOPE", Value: lakekeeperUIScope(oidc.scope)},
-			corev1.EnvVar{Name: "LAKEKEEPER__AUTHZ_BACKEND", Value: "allowall"},
 		)
 		if oidc.publicIssuer != "" && oidc.publicIssuer != oidc.issuer {
 			env = append(env,
@@ -248,4 +262,16 @@ func lakekeeperUIScope(scope string) string {
 		return scope
 	}
 	return "openid " + scope
+}
+
+func lakekeeperTrustedEngineEnv(oidc oidcConfig) []corev1.EnvVar {
+	audiences := oidc.trinoClientID
+	if oidc.opaClientID != "" && oidc.opaClientID != oidc.trinoClientID {
+		audiences = oidc.trinoClientID + "," + oidc.opaClientID
+	}
+	return []corev1.EnvVar{
+		{Name: "LAKEKEEPER__TRUSTED_ENGINES__TRINO__TYPE", Value: "trino"},
+		{Name: "LAKEKEEPER__TRUSTED_ENGINES__TRINO__OWNER_PROPERTY", Value: "trino.run-as-owner"},
+		{Name: "LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__AUDIENCES", Value: "[" + audiences + "]"},
+	}
 }

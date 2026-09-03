@@ -38,10 +38,18 @@ import (
 type fakeCatalog struct {
 	bootstraps int
 	warehouses []string
+	grants     []string
 }
 
 func (f *fakeCatalog) Bootstrap(_ context.Context, _, _ string, _ int32, _ string) error {
 	f.bootstraps++
+	return nil
+}
+
+func (f *fakeCatalog) EnsureGrants(_ context.Context, _, _ string, _ int32, _ string, principals []CatalogPrincipal) error {
+	for _, p := range principals {
+		f.grants = append(f.grants, p.Subject+"="+p.ServerRelation+"/"+p.ProjectRelation)
+	}
 	return nil
 }
 
@@ -121,19 +129,25 @@ var _ = Describe("DataPlatform Controller", func() {
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: configMapKeycloakRealm, Namespace: nameKeycloak}, realmCM)).To(Succeed())
 		Expect(realmCM.Data[keyRealmJSON]).To(ContainSubstring("oidc-sub-mapper"))
 		Expect(realmCM.Data[keyRealmJSON]).To(ContainSubstring(`"name":"basic"`))
+		Expect(realmCM.Data[keyRealmJSON]).To(ContainSubstring(`"clientId":"opa"`))
 
 		By("creating the LakeKeeper namespace workloads")
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: namePostgres, Namespace: nameLakekeeper}, sts)).To(Succeed())
 		Expect(sts.Spec.Template.Spec.Containers[0].SecurityContext.RunAsUser).To(Equal(ptr.To(uidPostgres)))
 		Expect(sts.Spec.Template.Spec.Containers[0].Env).To(ContainElement(corev1.EnvVar{Name: keyPGDATA, Value: pgDataPath}))
 
-		By("waiting for Keycloak before LakeKeeper")
+		By("waiting for Keycloak and OpenFGA before LakeKeeper")
 		err = k8sClient.Get(ctx, types.NamespacedName{Name: nameLakekeeper, Namespace: nameLakekeeper}, deploy)
 		Expect(errors.IsNotFound(err)).To(BeTrue())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: namePostgres, Namespace: nameOpenFGA}, sts)).To(Succeed())
 
 		markDeploymentReady(ctx, nameKeycloak, nameKeycloak)
 		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 		Expect(err).NotTo(HaveOccurred())
+		err = k8sClient.Get(ctx, types.NamespacedName{Name: nameLakekeeper, Namespace: nameLakekeeper}, deploy)
+		Expect(errors.IsNotFound(err)).To(BeTrue())
+
+		bringUpOpenFGA(ctx, reconciler, typeNamespacedName)
 
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameLakekeeper, Namespace: nameLakekeeper}, deploy)).To(Succeed())
 		Expect(deploy.Spec.Template.Spec.InitContainers).To(HaveLen(2))
@@ -142,9 +156,17 @@ var _ = Describe("DataPlatform Controller", func() {
 		Expect(deploy.Spec.Template.Spec.Containers[0].SecurityContext.RunAsUser).To(Equal(ptr.To(uidLakekeeper)))
 		Expect(envValue(deploy.Spec.Template.Spec.Containers[0].Env, "LAKEKEEPER__OPENID_PROVIDER_URI")).To(ContainSubstring("/realms/dataplatform"))
 		Expect(envValue(deploy.Spec.Template.Spec.Containers[0].Env, "LAKEKEEPER__UI__OPENID_SCOPE")).To(Equal("openid lakekeeper"))
+		Expect(envValue(deploy.Spec.Template.Spec.Containers[0].Env, "LAKEKEEPER__AUTHZ_BACKEND")).To(Equal("openfga"))
+		Expect(envValue(deploy.Spec.Template.Spec.Containers[0].Env, "LAKEKEEPER__OPENFGA__ENDPOINT")).To(Equal("http://openfga.openfga.svc:8081"))
+		Expect(envValue(deploy.Spec.Template.Spec.Containers[0].Env, "LAKEKEEPER__TRUSTED_ENGINES__TRINO__TYPE")).To(Equal("trino"))
 		Expect(envValue(deploy.Spec.Template.Spec.Containers[0].Env, "LAKEKEEPER__BASE_URI")).To(BeEmpty())
 		Expect(envValue(deploy.Spec.Template.Spec.Containers[0].Env, "LAKEKEEPER__UI__LAKEKEEPER_URL")).To(BeEmpty())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameLakekeeper, Namespace: nameLakekeeper}, svc)).To(Succeed())
+
+		By("creating OPA and wiring Trino access control to it")
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameOPA, Namespace: nameOpenFGA}, deploy)).To(Succeed())
+		Expect(deploy.Spec.Template.Spec.Containers[0].Args).To(ContainElements("--ignore", ".*"))
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: configMapOPAPolicies, Namespace: nameOpenFGA}, &corev1.ConfigMap{})).To(Succeed())
 
 		By("creating the Trino coordinator wired to MinIO and OIDC")
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameTrino, Namespace: nameTrino}, deploy)).To(Succeed())
@@ -156,6 +178,8 @@ var _ = Describe("DataPlatform Controller", func() {
 		Expect(string(cfg.Data["config.properties.coordinator"])).To(ContainSubstring("discovery.uri=http://127.0.0.1:8080"))
 		Expect(string(cfg.Data["config.properties.coordinator"])).NotTo(ContainSubstring("http-server.authentication.type=oauth2"))
 		Expect(string(cfg.Data["config.properties.worker"])).To(ContainSubstring("discovery.uri=http://trino.trino.svc:8080"))
+		Expect(string(cfg.Data["access-control.properties"])).To(ContainSubstring("access-control.name=opa"))
+		Expect(string(cfg.Data["access-control.properties"])).To(ContainSubstring("http://opa.openfga.svc:8181/v1/data/trino/allow"))
 		catalogSecret := &corev1.Secret{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: secretTrinoCatalog, Namespace: nameTrino}, catalogSecret)).To(Succeed())
 		props := string(catalogSecret.Data[nameLakekeeper+".properties"])
@@ -176,6 +200,7 @@ var _ = Describe("DataPlatform Controller", func() {
 		markStatefulSetReady(ctx, namePostgres, nameLakekeeper)
 		markStatefulSetReady(ctx, nameMinio, nameMinio)
 		markDeploymentReady(ctx, nameKeycloak, nameKeycloak)
+		bringUpOpenFGA(ctx, reconciler, typeNamespacedName)
 
 		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 		Expect(err).NotTo(HaveOccurred())
@@ -196,6 +221,8 @@ var _ = Describe("DataPlatform Controller", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(catalog.bootstraps).To(Equal(1))
 		Expect(catalog.warehouses).To(ContainElement("default"))
+		Expect(catalog.grants).To(ContainElement("oidc~" + dataplatformv1alpha1.DefaultOIDCAdminUserID + "=admin/project_admin"))
+		Expect(catalog.grants).To(ContainElement(HaveSuffix("=/security_admin")))
 
 		updated := &dataplatformv1alpha1.DataPlatform{}
 		Expect(k8sClient.Get(ctx, typeNamespacedName, updated)).To(Succeed())
@@ -203,6 +230,7 @@ var _ = Describe("DataPlatform Controller", func() {
 		Expect(updated.Status.LakekeeperEndpoint).To(Equal("http://lakekeeper.lakekeeper.svc:8181"))
 		Expect(updated.Status.TrinoEndpoint).To(Equal("http://trino.trino.svc:8080"))
 		Expect(updated.Status.KeycloakEndpoint).To(Equal("http://keycloak.keycloak.svc:8080"))
+		Expect(updated.Status.OpenFGAEndpoint).To(Equal("http://openfga.openfga.svc:8081"))
 	})
 
 	It("advertises publicURL as the Keycloak hostname behind ingress", func() {
@@ -231,8 +259,7 @@ var _ = Describe("DataPlatform Controller", func() {
 		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 		Expect(err).NotTo(HaveOccurred())
 		markDeploymentReady(ctx, nameKeycloak, nameKeycloak)
-		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
-		Expect(err).NotTo(HaveOccurred())
+		bringUpOpenFGA(ctx, reconciler, typeNamespacedName)
 
 		deploy := &appsv1.Deployment{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameLakekeeper, Namespace: nameLakekeeper}, deploy)).To(Succeed())
@@ -373,6 +400,7 @@ var _ = Describe("DataPlatform Controller", func() {
 
 		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 		Expect(err).NotTo(HaveOccurred())
+		bringUpOpenFGA(ctx, reconciler, typeNamespacedName)
 
 		deploy := &appsv1.Deployment{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nameLakekeeper, Namespace: nameLakekeeper}, deploy)).To(Succeed())
@@ -394,6 +422,15 @@ func markStatefulSetReady(ctx context.Context, name, ns string) {
 	sts.Status.ReadyReplicas = 1
 	sts.Status.Replicas = 1
 	Expect(k8sClient.Status().Update(ctx, sts)).To(Succeed())
+}
+
+func bringUpOpenFGA(ctx context.Context, reconciler *DataPlatformReconciler, name types.NamespacedName) {
+	markStatefulSetReady(ctx, namePostgres, nameOpenFGA)
+	_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: name})
+	Expect(err).NotTo(HaveOccurred())
+	markDeploymentReady(ctx, nameOpenFGA, nameOpenFGA)
+	_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: name})
+	Expect(err).NotTo(HaveOccurred())
 }
 
 func markDeploymentReady(ctx context.Context, name, ns string) {

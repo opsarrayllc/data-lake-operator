@@ -18,10 +18,18 @@ package controller
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"strings"
+	"time"
 
+	"github.com/google/uuid"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -107,6 +115,14 @@ func (r *DataPlatformReconciler) embeddedOIDCConfig(ctx context.Context, dp *dat
 	if err != nil {
 		return oidcConfig{}, err
 	}
+	opaID, err := r.getSecretData(ctx, secretOIDC, ns, keyOIDCOpaClientID)
+	if err != nil {
+		return oidcConfig{}, err
+	}
+	opaSecret, err := r.getSecretData(ctx, secretOIDC, ns, keyOIDCOpaClientSecret)
+	if err != nil {
+		return oidcConfig{}, err
+	}
 
 	return oidcConfig{
 		enabled:          true,
@@ -117,8 +133,14 @@ func (r *DataPlatformReconciler) embeddedOIDCConfig(ctx context.Context, dp *dat
 		uiClientID:       uiID,
 		trinoClientID:    trinoID,
 		trinoSecret:      trinoSecret,
+		opaClientID:      opaID,
+		opaSecret:        opaSecret,
 		operatorClientID: operatorID,
 		operatorSecret:   operatorSecret,
+		adminSubject:     dataplatformv1alpha1.DefaultOIDCAdminUserID,
+		adminName:        dataplatformv1alpha1.DefaultOIDCAdminUser,
+		adminEmail:       keycloakAdminEmail,
+		opaSubject:       keycloakUUID("service-account", opaID),
 		tokenURL:         oidcTokenURL(issuer),
 		proxyNamespace:   ns,
 		proxyService:     nameKeycloak,
@@ -127,7 +149,67 @@ func (r *DataPlatformReconciler) embeddedOIDCConfig(ctx context.Context, dp *dat
 	}, nil
 }
 
+// ensureKeycloakRealmKey generates the realm's RS256 signing key once and keeps
+// it in a Secret. Keycloak holds realm keys in its own database, which is an
+// emptyDir here, so without importing a stable key every pod recreate would
+// resign with a fresh key and reject tokens issued before it.
+func (r *DataPlatformReconciler) ensureKeycloakRealmKey(
+	ctx context.Context,
+	dp *dataplatformv1alpha1.DataPlatform,
+	ns string,
+) error {
+	secret := &corev1.Secret{}
+	err := r.Get(ctx, types.NamespacedName{Name: secretKeycloakRealmKey, Namespace: ns}, secret)
+	if err == nil {
+		return nil
+	}
+	if !errors.IsNotFound(err) {
+		return err
+	}
+	privateKey, certificate, err := generateRealmSigningKey(dp.Spec.Auth.Keycloak.RealmOrDefault())
+	if err != nil {
+		return err
+	}
+	return r.ensureGeneratedSecret(ctx, dp, secretKeycloakRealmKey, ns, componentKeycloak, map[string][]byte{
+		keyRealmPrivateKey:  []byte(privateKey),
+		keyRealmCertificate: []byte(certificate),
+	})
+}
+
+// generateRealmSigningKey returns a PKCS#8 key and self-signed certificate,
+// both base64-encoded DER as Keycloak's imported-key provider expects.
+func generateRealmSigningKey(realm string) (string, string, error) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return "", "", err
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return "", "", err
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return "", "", err
+	}
+	template := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: realm},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().AddDate(10, 0, 0),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		IsCA:         true,
+	}
+	certificate, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		return "", "", err
+	}
+	return base64.StdEncoding.EncodeToString(der), base64.StdEncoding.EncodeToString(certificate), nil
+}
+
 func (r *DataPlatformReconciler) ensureKeycloakSecrets(ctx context.Context, dp *dataplatformv1alpha1.DataPlatform, ns string) error {
+	if err := r.ensureKeycloakRealmKey(ctx, dp, ns); err != nil {
+		return err
+	}
 	admin := &corev1.Secret{}
 	err := r.Get(ctx, types.NamespacedName{Name: secretKeycloakAdmin, Namespace: ns}, admin)
 	if errors.IsNotFound(err) {
@@ -147,27 +229,56 @@ func (r *DataPlatformReconciler) ensureKeycloakSecrets(ctx context.Context, dp *
 
 	oidc := &corev1.Secret{}
 	err = r.Get(ctx, types.NamespacedName{Name: secretOIDC, Namespace: ns}, oidc)
-	if err == nil {
+	if errors.IsNotFound(err) {
+		trinoSecret, genErr := randomHex(16)
+		if genErr != nil {
+			return genErr
+		}
+		operatorSecret, genErr := randomHex(16)
+		if genErr != nil {
+			return genErr
+		}
+		opaSecret, genErr := randomHex(16)
+		if genErr != nil {
+			return genErr
+		}
+		return r.ensureGeneratedSecret(ctx, dp, secretOIDC, ns, componentKeycloak, map[string][]byte{
+			keyOIDCClientID:          []byte(dataplatformv1alpha1.DefaultOIDCClientID),
+			keyOIDCTrinoClientID:     []byte(dataplatformv1alpha1.DefaultOIDCTrinoClientID),
+			keyOIDCTrinoClientSecret: []byte(trinoSecret),
+			keyOIDCOperatorClientID:  []byte(dataplatformv1alpha1.DefaultOIDCOperatorClient),
+			keyOIDCOperatorSecret:    []byte(operatorSecret),
+			keyOIDCOpaClientID:       []byte(dataplatformv1alpha1.DefaultOIDCOpaClientID),
+			keyOIDCOpaClientSecret:   []byte(opaSecret),
+		})
+	}
+	if err != nil {
+		return err
+	}
+	return r.ensureOIDCSecretKeys(ctx, oidc)
+}
+
+func (r *DataPlatformReconciler) ensureOIDCSecretKeys(ctx context.Context, oidc *corev1.Secret) error {
+	if oidc.Data == nil {
+		oidc.Data = map[string][]byte{}
+	}
+	changed := false
+	if _, ok := oidc.Data[keyOIDCOpaClientID]; !ok {
+		oidc.Data[keyOIDCOpaClientID] = []byte(dataplatformv1alpha1.DefaultOIDCOpaClientID)
+		changed = true
+	}
+	if _, ok := oidc.Data[keyOIDCOpaClientSecret]; !ok {
+		secret, err := randomHex(16)
+		if err != nil {
+			return err
+		}
+		oidc.Data[keyOIDCOpaClientSecret] = []byte(secret)
+		changed = true
+	}
+	if !changed {
 		return nil
 	}
-	if !errors.IsNotFound(err) {
-		return err
-	}
-	trinoSecret, err := randomHex(16)
-	if err != nil {
-		return err
-	}
-	operatorSecret, err := randomHex(16)
-	if err != nil {
-		return err
-	}
-	return r.ensureGeneratedSecret(ctx, dp, secretOIDC, ns, componentKeycloak, map[string][]byte{
-		keyOIDCClientID:          []byte(dataplatformv1alpha1.DefaultOIDCClientID),
-		keyOIDCTrinoClientID:     []byte(dataplatformv1alpha1.DefaultOIDCTrinoClientID),
-		keyOIDCTrinoClientSecret: []byte(trinoSecret),
-		keyOIDCOperatorClientID:  []byte(dataplatformv1alpha1.DefaultOIDCOperatorClient),
-		keyOIDCOperatorSecret:    []byte(operatorSecret),
-	})
+	return r.Update(ctx, oidc)
 }
 
 func (r *DataPlatformReconciler) applyKeycloakRealm(
@@ -188,7 +299,30 @@ func (r *DataPlatformReconciler) applyKeycloakRealm(
 	if err != nil {
 		return "", err
 	}
-	raw, err := keycloakRealmJSON(spec, adminPass, trinoSecret, operatorSecret, dp.Spec.Lakekeeper.NamespaceOrDefault(), dp.Spec.Lakekeeper.PublicURL, dp.Spec.Trino.PublicURL)
+	opaSecret, err := r.getSecretData(ctx, secretOIDC, ns, keyOIDCOpaClientSecret)
+	if err != nil {
+		return "", err
+	}
+	signingKey, err := r.getSecretData(ctx, secretKeycloakRealmKey, ns, keyRealmPrivateKey)
+	if err != nil {
+		return "", err
+	}
+	signingCert, err := r.getSecretData(ctx, secretKeycloakRealmKey, ns, keyRealmCertificate)
+	if err != nil {
+		return "", err
+	}
+	raw, err := keycloakRealmJSON(realmOptions{
+		spec:                spec,
+		adminPassword:       adminPass,
+		trinoSecret:         trinoSecret,
+		operatorSecret:      operatorSecret,
+		opaSecret:           opaSecret,
+		signingKey:          signingKey,
+		signingCertificate:  signingCert,
+		lakekeeperNamespace: dp.Spec.Lakekeeper.NamespaceOrDefault(),
+		lakekeeperPublicURL: dp.Spec.Lakekeeper.PublicURL,
+		trinoPublicURL:      dp.Spec.Trino.PublicURL,
+	})
 	if err != nil {
 		return "", err
 	}
@@ -321,9 +455,30 @@ func keycloakHostnameEnv(ns string, spec dataplatformv1alpha1.KeycloakSpec) []co
 	return env
 }
 
-func keycloakRealmJSON(spec dataplatformv1alpha1.KeycloakSpec, adminPass, trinoSecret, operatorSecret, lakekeeperNS, lakekeeperPublicURL, trinoPublicURL string) (string, error) {
+// realmOptions carries everything the realm import needs.
+type realmOptions struct {
+	spec                dataplatformv1alpha1.KeycloakSpec
+	adminPassword       string
+	trinoSecret         string
+	operatorSecret      string
+	opaSecret           string
+	signingKey          string
+	signingCertificate  string
+	lakekeeperNamespace string
+	lakekeeperPublicURL string
+	trinoPublicURL      string
+}
+
+func keycloakRealmJSON(opts realmOptions) (string, error) {
+	spec := opts.spec
+	adminPass := opts.adminPassword
+	trinoSecret := opts.trinoSecret
+	operatorSecret := opts.operatorSecret
+	opaSecret := opts.opaSecret
+	lakekeeperPublicURL := opts.lakekeeperPublicURL
+	trinoPublicURL := opts.trinoPublicURL
 	realm := spec.RealmOrDefault()
-	lkCallback := clusterServiceURL(nameLakekeeper, lakekeeperNS, lakekeeperPort) + "/ui/callback"
+	lkCallback := clusterServiceURL(nameLakekeeper, opts.lakekeeperNamespace, lakekeeperPort) + "/ui/callback"
 	redirects := []string{
 		lkCallback,
 		"http://localhost:8181/ui/callback",
@@ -354,6 +509,7 @@ func keycloakRealmJSON(spec dataplatformv1alpha1.KeycloakSpec, adminPass, trinoS
 		// we must ship basic/profile/email ourselves.
 		"clientScopes":               oidcClientScopes(),
 		"defaultDefaultClientScopes": defaultOIDCClientScopes(),
+		"components":                 realmKeyComponents(opts.signingKey, opts.signingCertificate),
 		"clients": []map[string]any{
 			{
 				"clientId":                  dataplatformv1alpha1.DefaultOIDCClientID,
@@ -374,14 +530,16 @@ func keycloakRealmJSON(spec dataplatformv1alpha1.KeycloakSpec, adminPass, trinoS
 				},
 			},
 			confidentialClient(dataplatformv1alpha1.DefaultOIDCTrinoClientID, "Trino", trinoSecret, trinoRedirects),
+			confidentialClient(dataplatformv1alpha1.DefaultOIDCOpaClientID, "OPA", opaSecret, nil),
 			confidentialClient(dataplatformv1alpha1.DefaultOIDCOperatorClient, "Data Platform Operator", operatorSecret, nil),
 		},
 		"users": []map[string]any{
 			{
+				"id":            dataplatformv1alpha1.DefaultOIDCAdminUserID,
 				"username":      dataplatformv1alpha1.DefaultOIDCAdminUser,
 				"enabled":       true,
 				"emailVerified": true,
-				"email":         "admin@local",
+				"email":         keycloakAdminEmail,
 				"firstName":     "Admin",
 				"lastName":      "Local",
 				"credentials": []map[string]any{{
@@ -390,6 +548,9 @@ func keycloakRealmJSON(spec dataplatformv1alpha1.KeycloakSpec, adminPass, trinoS
 					"temporary": false,
 				}},
 			},
+			serviceAccountUser(dataplatformv1alpha1.DefaultOIDCTrinoClientID),
+			serviceAccountUser(dataplatformv1alpha1.DefaultOIDCOpaClientID),
+			serviceAccountUser(dataplatformv1alpha1.DefaultOIDCOperatorClient),
 		},
 	}
 	raw, err := json.Marshal(doc)
@@ -399,8 +560,73 @@ func keycloakRealmJSON(spec dataplatformv1alpha1.KeycloakSpec, adminPass, trinoS
 	return string(raw), nil
 }
 
+// keycloakUUID derives a stable id for an imported realm object. Keycloak
+// assigns random ids on import and stores the realm on an emptyDir, so without
+// pinning them every pod restart would issue new subjects for the service
+// accounts and invalidate the LakeKeeper grants held against the old ones.
+func keycloakUUID(kind, name string) string {
+	return uuid.NewSHA1(uuid.NameSpaceURL, []byte("https://dataplatform.opsarray.io/keycloak/"+kind+"/"+name)).String()
+}
+
+// serviceAccountUser pins the identity Keycloak would otherwise generate for a
+// confidential client's service account.
+func serviceAccountUser(clientID string) map[string]any {
+	return map[string]any{
+		"id":                     keycloakUUID("service-account", clientID),
+		"username":               "service-account-" + clientID,
+		"enabled":                true,
+		"serviceAccountClientId": clientID,
+	}
+}
+
+// realmKeyComponents imports the operator's RS256 key as the realm's highest
+// priority signing key. Supplying any key provider suppresses the ones Keycloak
+// would generate, so the HMAC and AES providers other flows rely on are listed
+// too; only the RS256 key that signs tokens has to survive a restart.
+func realmKeyComponents(signingKey, certificate string) map[string]any {
+	return map[string]any{
+		"org.keycloak.keys.KeyProvider": []map[string]any{
+			{
+				"name":       "operator-rsa",
+				"providerId": "rsa",
+				"config": map[string][]string{
+					"privateKey":  {signingKey},
+					"certificate": {certificate},
+					"algorithm":   {"RS256"},
+					"priority":    {"200"},
+					"active":      {"true"},
+					"enabled":     {"true"},
+				},
+			},
+			{
+				"name":       "hmac-generated",
+				"providerId": "hmac-generated",
+				"config": map[string][]string{
+					"algorithm": {"HS512"},
+					"priority":  {"100"},
+				},
+			},
+			{
+				"name":       "aes-generated",
+				"providerId": "aes-generated",
+				"config":     map[string][]string{"priority": {"100"}},
+			},
+			{
+				"name":       "rsa-enc-generated",
+				"providerId": "rsa-enc-generated",
+				"config": map[string][]string{
+					"algorithm": {"RSA-OAEP"},
+					"priority":  {"100"},
+				},
+			},
+		},
+	}
+}
+
 func confidentialClient(id, name, secret string, redirectURIs []string) map[string]any {
+	mappers := []map[string]any{audienceMapper(id)}
 	client := map[string]any{
+		"id":                        keycloakUUID("client", id),
 		"clientId":                  id,
 		"name":                      name,
 		"enabled":                   true,
@@ -412,12 +638,13 @@ func confidentialClient(id, name, secret string, redirectURIs []string) map[stri
 		"directAccessGrantsEnabled": false,
 		"defaultClientScopes":       defaultOIDCClientScopes(),
 		"optionalClientScopes":      []string{},
+		"protocolMappers":           mappers,
 	}
 	if len(redirectURIs) > 0 {
 		client["standardFlowEnabled"] = true
 		client["redirectUris"] = redirectURIs
 		client["webOrigins"] = []string{"+"}
-		client["protocolMappers"] = []map[string]any{{
+		mappers = append(mappers, map[string]any{
 			"name":           "username",
 			"protocol":       "openid-connect",
 			"protocolMapper": "oidc-usermodel-property-mapper",
@@ -429,9 +656,24 @@ func confidentialClient(id, name, secret string, redirectURIs []string) map[stri
 				"access.token.claim":   "true",
 				"userinfo.token.claim": "true",
 			},
-		}}
+		})
+		client["protocolMappers"] = mappers
 	}
 	return client
+}
+
+func audienceMapper(clientID string) map[string]any {
+	return map[string]any{
+		"name":           "audience-" + clientID,
+		"protocol":       "openid-connect",
+		"protocolMapper": "oidc-audience-mapper",
+		"config": map[string]string{
+			"included.client.audience":  clientID,
+			"id.token.claim":            "false",
+			"access.token.claim":        "true",
+			"introspection.token.claim": "true",
+		},
+	}
 }
 
 func defaultOIDCClientScopes() []string {

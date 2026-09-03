@@ -68,8 +68,8 @@ spec:
                     type: boolean
                   enabled:
                     description: |-
-                      enabled turns on OIDC for LakeKeeper, the Trino Iceberg catalog, and the
-                      Trino Web UI when spec.trino.publicURL is set.
+                      enabled turns on OIDC for LakeKeeper, OpenFGA clients, the Trino Iceberg
+                      catalog, and the Trino Web UI when spec.trino.publicURL is set.
                       Defaults to true.
                     type: boolean
                   keycloak:
@@ -216,6 +216,155 @@ spec:
                         type: string
                     required:
                     - issuer
+                    type: object
+                type: object
+              authz:
+                description: |-
+                  authz configures fine-grained authorization. By default the operator deploys
+                  OpenFGA and an OPA bridge so Trino enforces LakeKeeper permissions.
+                properties:
+                  embedded:
+                    description: embedded deploys OpenFGA in its own namespace. Defaults
+                      to true when authz is enabled.
+                    type: boolean
+                  enabled:
+                    description: |-
+                      enabled deploys OpenFGA and uses it as LakeKeeper's authorizer.
+                      Defaults to true.
+                    type: boolean
+                  openfga:
+                    description: openfga configures the operator-managed OpenFGA instance
+                      and the OPA bridge.
+                    properties:
+                      image:
+                        description: image is the OpenFGA container image.
+                        type: string
+                      namespace:
+                        description: namespace defaults to "openfga". Use a unique
+                          value if you create multiple DataPlatforms.
+                        type: string
+                      opaImage:
+                        description: opaImage is the Open Policy Agent image that
+                          translates Trino checks to LakeKeeper.
+                        type: string
+                      postgres:
+                        description: postgres is OpenFGA's metadata database.
+                        properties:
+                          credentialsSecretRef:
+                            description: credentialsSecretRef locates username/password
+                              for an external database.
+                            properties:
+                              name:
+                                description: name of the Secret.
+                                type: string
+                              namespace:
+                                description: namespace of the Secret. Defaults to
+                                  the LakeKeeper namespace.
+                                type: string
+                              passwordKey:
+                                default: password
+                                description: passwordKey is the Secret key for the
+                                  database password.
+                                type: string
+                              usernameKey:
+                                default: username
+                                description: usernameKey is the Secret key for the
+                                  database user.
+                                type: string
+                            required:
+                            - name
+                            type: object
+                          database:
+                            description: database name.
+                            type: string
+                          embedded:
+                            description: |-
+                              embedded deploys a single-replica Postgres in the LakeKeeper namespace.
+                              Defaults to true. Set false and fill host/credentials for an external database.
+                            type: boolean
+                          host:
+                            description: host is required when embedded is false.
+                            type: string
+                          image:
+                            description: image is used when embedded is true.
+                            type: string
+                          port:
+                            description: port of the external database.
+                            format: int32
+                            type: integer
+                          sslMode:
+                            description: sslMode is passed to the Postgres driver
+                              (disable, prefer, require, ...).
+                            type: string
+                          storageSize:
+                            description: storageSize is the PVC size for embedded
+                              Postgres.
+                            type: string
+                        type: object
+                      resources:
+                        description: resources are compute resource requirements for
+                          the OpenFGA container.
+                        properties:
+                          claims:
+                            description: |-
+                              Claims lists the names of resources, defined in spec.resourceClaims,
+                              that are used by this container.
+
+                              This field depends on the
+                              DynamicResourceAllocation feature gate.
+
+                              This field is immutable. It can only be set for containers.
+                            items:
+                              description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                              properties:
+                                name:
+                                  description: |-
+                                    Name must match the name of one entry in pod.spec.resourceClaims of
+                                    the Pod where this field is used. It makes that resource available
+                                    inside a container.
+                                  type: string
+                                request:
+                                  description: |-
+                                    Request is the name chosen for a request in the referenced claim.
+                                    If empty, everything from the claim is made available, otherwise
+                                    only the result of this request.
+                                  type: string
+                              required:
+                              - name
+                              type: object
+                            type: array
+                            x-kubernetes-list-map-keys:
+                            - name
+                            x-kubernetes-list-type: map
+                          limits:
+                            additionalProperties:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                            description: |-
+                              Limits describes the maximum amount of compute resources allowed.
+                              More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                            type: object
+                          requests:
+                            additionalProperties:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                            description: |-
+                              Requests describes the minimum amount of compute resources required.
+                              If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                              otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                              More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                            type: object
+                        type: object
+                      store:
+                        description: store is the OpenFGA store name LakeKeeper uses.
+                          Defaults to "lakekeeper".
+                        type: string
                     type: object
                 type: object
               lakekeeper:
@@ -1022,6 +1171,7 @@ spec:
                   - "Ready": every enabled component is fully functional
                   - "MinioReady": in-cluster MinIO is ready, or an external object store is configured
                   - "AuthReady": Keycloak is ready, an external OIDC issuer is configured, or auth is disabled
+                  - "OpenFGAReady": OpenFGA is ready, or authorization is disabled
                   - "PostgresReady": the catalog database is usable
                   - "LakekeeperReady": the catalog Deployment is ready
                   - "WarehouseReady": the Iceberg warehouse has been created
@@ -1097,6 +1247,10 @@ spec:
               minioEndpoint:
                 description: minioEndpoint is the in-cluster S3 API URL when MinIO
                   is embedded.
+                type: string
+              openfgaEndpoint:
+                description: openfgaEndpoint is the in-cluster gRPC URL of OpenFGA
+                  when it is embedded.
                 type: string
               trinoEndpoint:
                 description: trinoEndpoint is the in-cluster HTTP URL of the Trino

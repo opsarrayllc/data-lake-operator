@@ -58,7 +58,19 @@ linters:
         path: internal/controller/keycloak.go
       - linters:
           - goconst
+        path: internal/controller/catalog.go
+      - linters:
+          - goconst
+        path: internal/controller/lakekeeper.go
+      - linters:
+          - goconst
         path: internal/controller/trino.go
+      - linters:
+          - goconst
+        path: internal/controller/openfga.go
+      - linters:
+          - goconst
+        path: internal/controller/opa.go
       - linters:
           - goconst
         path: .*_test.go

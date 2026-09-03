@@ -49,6 +49,13 @@ func (r *DataPlatformReconciler) reconcileWarehouse(ctx context.Context, dp *dat
 		setCondition(dp, dataplatformv1alpha1.ConditionWarehouseReady, metav1.ConditionFalse, reasonError, err.Error())
 		return err
 	}
+	if principals := catalogPrincipals(dp, oidc); len(principals) > 0 {
+		if err := r.Catalog.EnsureGrants(ctx, ns, nameLakekeeper, lakekeeperPort, token, principals); err != nil {
+			setCondition(dp, dataplatformv1alpha1.ConditionWarehouseReady, metav1.ConditionFalse, reasonError, err.Error())
+			return err
+		}
+		log.Info("Ensured LakeKeeper grants", "principals", len(principals))
+	}
 	req := WarehouseRequest{
 		Name:            dp.Spec.Lakekeeper.Warehouse.NameOrDefault(),
 		Bucket:          store.Bucket,
@@ -69,4 +76,32 @@ func (r *DataPlatformReconciler) reconcileWarehouse(ctx context.Context, dp *dat
 	log.Info("Ensured LakeKeeper warehouse", "name", req.Name)
 	setCondition(dp, dataplatformv1alpha1.ConditionWarehouseReady, metav1.ConditionTrue, reasonReady, "Warehouse "+req.Name+" is ready")
 	return nil
+}
+
+// catalogPrincipals lists the identities that need grants once the catalog is
+// bootstrapped. Empty for external issuers, where the operator does not own the
+// user list and cannot predict subjects.
+func catalogPrincipals(dp *dataplatformv1alpha1.DataPlatform, oidc oidcConfig) []CatalogPrincipal {
+	if oidc.adminSubject == "" {
+		return nil
+	}
+	principals := []CatalogPrincipal{{
+		Subject:         oidcSubjectPrefix + oidc.adminSubject,
+		Name:            oidc.adminName,
+		Email:           oidc.adminEmail,
+		Type:            "human",
+		ServerRelation:  "admin",
+		ProjectRelation: "project_admin",
+	}}
+	// The OPA bridge asks LakeKeeper whether other users may act, which is a
+	// privileged read it cannot perform without security_admin.
+	if dp.Spec.Authz.IsEnabled() && oidc.opaSubject != "" {
+		principals = append(principals, CatalogPrincipal{
+			Subject:         oidcSubjectPrefix + oidc.opaSubject,
+			Name:            oidc.opaClientID,
+			Type:            "application",
+			ProjectRelation: "security_admin",
+		})
+	}
+	return principals
 }

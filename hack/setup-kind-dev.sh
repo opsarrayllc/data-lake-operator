@@ -14,8 +14,8 @@ KUBECTL_BIN="${KUBECTL:-kubectl}"
 CERT_DIR="${KIND_CERT_DIR:-${ROOT}/bin/certs}"
 KUBECONFIG_FILE="${KIND_KUBECONFIG:-${ROOT}/bin/kubeconfig-${CLUSTER}}"
 TLS_SECRET="${KIND_TLS_SECRET:-data-platform-tls}"
-NAMESPACES=(keycloak lakekeeper trino)
-HOSTS=(keycloak lakekeeper trino)
+NAMESPACES=(keycloak lakekeeper trino openfga)
+HOSTS=(keycloak lakekeeper trino openfga opa)
 
 abs_from_root() {
 	case "$1" in
@@ -80,14 +80,19 @@ kc apply -f "${INGRESS_RESOURCES}"
 echo "==> Installing DataPlatform CRDs"
 make -C "${ROOT}" install KUBECONFIG="${KUBECONFIG_FILE}"
 
-HOSTS_LINE="127.0.0.1"
+# Check each name separately. A single sentinel host would hide names added to
+# HOSTS after a cluster was first set up.
+MISSING_HOSTS=()
 for host in "${HOSTS[@]}"; do
-	HOSTS_LINE+=" ${host}.${DOMAIN}"
+	if ! grep -qE "(^|[[:space:]])${host}\.${DOMAIN}([[:space:]]|$)" /etc/hosts 2>/dev/null; then
+		MISSING_HOSTS+=("${host}.${DOMAIN}")
+	fi
 done
 
-if grep -q "keycloak.${DOMAIN}" /etc/hosts 2>/dev/null; then
-	echo "==> /etc/hosts already has ${DOMAIN} entries"
+if [ "${#MISSING_HOSTS[@]}" -eq 0 ]; then
+	echo "==> /etc/hosts already has every ${DOMAIN} name"
 else
+	HOSTS_LINE="127.0.0.1 ${MISSING_HOSTS[*]}"
 	echo "==> Add these names to /etc/hosts:"
 	echo "    ${HOSTS_LINE}"
 	if [ "${KIND_UPDATE_HOSTS:-}" = "1" ]; then

@@ -37,7 +37,7 @@ import (
 	dataplatformv1alpha1 "github.com/opsarrayllc/data-platform-operator/api/v1alpha1"
 )
 
-func (r *DataPlatformReconciler) reconcileTrino(ctx context.Context, dp *dataplatformv1alpha1.DataPlatform, store objectStore, oidc oidcConfig) error {
+func (r *DataPlatformReconciler) reconcileTrino(ctx context.Context, dp *dataplatformv1alpha1.DataPlatform, store objectStore, oidc oidcConfig, fga openfgaConfig) error {
 	ns := dp.Spec.Trino.NamespaceOrDefault()
 	dp.Status.TrinoEndpoint = clusterServiceURL(nameTrino, ns, trinoPort)
 
@@ -50,9 +50,14 @@ func (r *DataPlatformReconciler) reconcileTrino(ctx context.Context, dp *datapla
 	}
 	coordCfg := trinoConfigProperties(true, dp.Spec.Trino.WorkersOrDefault() == 0, ns, dp.Spec.Trino.ExtraConfig, oidc, dp.Spec.Trino.PublicURL, sharedSecret)
 	workerCfg := trinoConfigProperties(false, false, ns, dp.Spec.Trino.ExtraConfig, oidcConfig{}, "", sharedSecret)
-	cfgHash := hashData(coordCfg, workerCfg, catalogHash)
+	opaURL := ""
+	if fga.enabled && oidc.enabled {
+		opaURL = fga.opaURL
+	}
+	accessControl := trinoAccessControlProperties(opaURL)
+	cfgHash := hashData(coordCfg, workerCfg, catalogHash, accessControl)
 
-	if err := r.applyTrinoConfigMap(ctx, dp, ns, coordCfg, workerCfg); err != nil {
+	if err := r.applyTrinoConfigMap(ctx, dp, ns, coordCfg, workerCfg, accessControl); err != nil {
 		setCondition(dp, dataplatformv1alpha1.ConditionTrinoReady, metav1.ConditionFalse, reasonError, err.Error())
 		return err
 	}
@@ -64,7 +69,7 @@ func (r *DataPlatformReconciler) reconcileTrino(ctx context.Context, dp *datapla
 		setCondition(dp, dataplatformv1alpha1.ConditionTrinoReady, metav1.ConditionFalse, reasonError, err.Error())
 		return err
 	}
-	if err := r.applyTrinoCoordinator(ctx, dp, ns, cfgHash, trinoUIAuthEnabled(oidc, dp.Spec.Trino.PublicURL)); err != nil {
+	if err := r.applyTrinoCoordinator(ctx, dp, ns, cfgHash, trinoUIAuthEnabled(oidc, dp.Spec.Trino.PublicURL), opaURL != ""); err != nil {
 		setCondition(dp, dataplatformv1alpha1.ConditionTrinoReady, metav1.ConditionFalse, reasonError, err.Error())
 		return err
 	}
@@ -113,6 +118,17 @@ func trinoConfigProperties(coordinator, includeCoordinator bool, ns string, extr
 
 func trinoUIAuthEnabled(oidc oidcConfig, publicURL string) bool {
 	return oidc.enabled && strings.TrimRight(publicURL, "/") != ""
+}
+
+func trinoAccessControlProperties(opaURL string) string {
+	if opaURL == "" {
+		return ""
+	}
+	return renderProperties(map[string]string{
+		"access-control.name":    "opa",
+		"opa.policy.uri":         opaURL + "/v1/data/trino/allow",
+		"opa.policy.batched-uri": opaURL + "/v1/data/trino/batch",
+	})
 }
 
 func trinoOAuthProperties(oidc oidcConfig) map[string]string {
@@ -235,7 +251,7 @@ func lakekeeperCatalogProperties(dp *dataplatformv1alpha1.DataPlatform, store ob
 func (r *DataPlatformReconciler) applyTrinoConfigMap(
 	ctx context.Context,
 	dp *dataplatformv1alpha1.DataPlatform,
-	ns, coordCfg, workerCfg string,
+	ns, coordCfg, workerCfg, accessControl string,
 ) error {
 	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: secretTrinoConfig, Namespace: ns}}
 	_ = client.IgnoreNotFound(r.Delete(ctx, cm))
@@ -248,6 +264,9 @@ func (r *DataPlatformReconciler) applyTrinoConfigMap(
 		secret.Data = map[string][]byte{
 			"config.properties.coordinator": []byte(coordCfg),
 			"config.properties.worker":      []byte(workerCfg),
+		}
+		if accessControl != "" {
+			secret.Data["access-control.properties"] = []byte(accessControl)
 		}
 		return nil
 	})
@@ -293,7 +312,7 @@ func (r *DataPlatformReconciler) applyTrinoCoordinator(
 	ctx context.Context,
 	dp *dataplatformv1alpha1.DataPlatform,
 	ns, cfgHash string,
-	oauth bool,
+	oauth, opa bool,
 ) error {
 	deploy := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: nameTrino, Namespace: ns}}
 	labels := labelsFor(dp, componentTrinoCoordinator)
@@ -314,6 +333,7 @@ func (r *DataPlatformReconciler) applyTrinoCoordinator(
 			dp.Spec.Trino.Coordinator.Resources,
 			dp.Spec.Trino.ExtraEnv,
 			oauth,
+			opa,
 		)
 		return nil
 	})
@@ -357,12 +377,13 @@ func (r *DataPlatformReconciler) reconcileTrinoWorkers(
 			dp.Spec.Trino.Resources,
 			dp.Spec.Trino.ExtraEnv,
 			false,
+			false,
 		)
 		return nil
 	})
 }
 
-func trinoPodSpec(image, configKey string, resources corev1.ResourceRequirements, env []corev1.EnvVar, oauth bool) corev1.PodSpec {
+func trinoPodSpec(image, configKey string, resources corev1.ResourceRequirements, env []corev1.EnvVar, oauth, opa bool) corev1.PodSpec {
 	probe := corev1.ProbeHandler{
 		HTTPGet: &corev1.HTTPGetAction{
 			Path: "/v1/info",
@@ -374,17 +395,25 @@ func trinoPodSpec(image, configKey string, resources corev1.ResourceRequirements
 			TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(trinoPort)},
 		}
 	}
+	mounts := []corev1.VolumeMount{
+		{Name: volumeConfig, MountPath: "/etc/trino/config.properties", SubPath: configKey},
+		{Name: "catalog", MountPath: "/etc/trino/catalog"},
+	}
+	if opa {
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      volumeConfig,
+			MountPath: "/etc/trino/access-control.properties",
+			SubPath:   "access-control.properties",
+		})
+	}
 	return corev1.PodSpec{
 		SecurityContext: restrictedPodSecurity(uidTrino, gidTrino),
 		Containers: []corev1.Container{{
-			Name:  nameTrino,
-			Image: image,
-			Ports: []corev1.ContainerPort{{Name: portNameHTTP, ContainerPort: trinoPort}},
-			Env:   env,
-			VolumeMounts: []corev1.VolumeMount{
-				{Name: volumeConfig, MountPath: "/etc/trino/config.properties", SubPath: configKey},
-				{Name: "catalog", MountPath: "/etc/trino/catalog"},
-			},
+			Name:         nameTrino,
+			Image:        image,
+			Ports:        []corev1.ContainerPort{{Name: portNameHTTP, ContainerPort: trinoPort}},
+			Env:          env,
+			VolumeMounts: mounts,
 			ReadinessProbe: &corev1.Probe{
 				ProbeHandler:  probe,
 				PeriodSeconds: 10,
